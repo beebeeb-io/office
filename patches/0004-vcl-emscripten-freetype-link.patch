@@ -1,5 +1,5 @@
 diff --git a/vcl/Library_vcl.mk b/vcl/Library_vcl.mk
-index 0b47d5879..6fd296ec9 100644
+index 0b47d5879..8195c144f 100644
 --- a/vcl/Library_vcl.mk
 +++ b/vcl/Library_vcl.mk
 @@ -89,6 +89,23 @@ $(if $(filter WNT-TRUE,$(OS)-$(USE_HEADLESS_CODE)), \
@@ -18,7 +18,7 @@ index 0b47d5879..6fd296ec9 100644
 +# WNT-TRUE block above is the same fix for the same underlying gap on Windows; this is
 +# its Emscripten-target equivalent, not a Windows-specific workaround.
 +$(if $(filter EMSCRIPTEN,$(OS)), \
-+	$(eval $(call gb_Library_use_static_libraries,vcl,\
++	$(eval $(call gb_Library_use_externals,vcl,\
 +        freetype \
 +	)) \
 +)
