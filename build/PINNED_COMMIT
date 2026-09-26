@@ -1,0 +1,8 @@
+repo=https://github.com/LibreOffice/core.git
+commit=f8941520720922033948ca14081dbb3dabbbe6b7
+branch=master
+pinned_on=2026-09-26
+note=Pinned to a specific commit (not a tag) because upstream master moves fast and the
+     static/README.wasm.md recipe already drifted (see build/PROGRESS.md: recipe said
+     emsdk 3.1.30, current configure.ac requires >=3.1.46). Re-pin deliberately, never
+     silently follow master.

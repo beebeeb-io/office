@@ -1,0 +1,17 @@
+# The upstream LibreOffice core checkout and build outputs are NOT vendored into
+# this repo as a monolithic blob — they are fetched by build/wasm.sh at a pinned
+# commit (see build/PINNED_COMMIT) and built locally. Only our own scripts, docs,
+# and Rust glue are tracked here.
+build/core/
+build/emsdk/
+build/workdir/
+build/*.log
+build/BUILD_PID
+build/wasm-out/
+
+# Rust
+target/
+Cargo.lock
+
+# macOS
+.DS_Store

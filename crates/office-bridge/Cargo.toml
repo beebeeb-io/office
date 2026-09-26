@@ -1,0 +1,19 @@
+[package]
+name = "office-bridge"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Sketch only (task 1567 phase 1) — glue between beebeeb-core (decrypt/encrypt) and the LibreOffice-WASM in-memory filesystem. Not built into the workspace yet; no Cargo.lock committed."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+# Intentionally NOT a dependency yet: beebeeb-core. This crate's job is to move bytes
+# across the boundary; beebeeb-core (repos/core) remains the only place that touches
+# key material, per the workspace rule "all crypto/serialization in core Rust, never
+# per-client". office-bridge takes already-decrypted bytes in, hands already-received
+# bytes back out — see src/lib.rs doc comment for the exact call sequence.

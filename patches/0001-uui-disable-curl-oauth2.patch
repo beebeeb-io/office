@@ -1,0 +1,81 @@
+diff --git a/uui/Library_uui.mk b/uui/Library_uui.mk
+index 1bc54ca6e..b2c978ab4 100644
+--- a/uui/Library_uui.mk
++++ b/uui/Library_uui.mk
+@@ -17,7 +17,20 @@ $(eval $(call gb_Library_set_include,uui,\
+ $(eval $(call gb_Library_set_componentfile,uui,uui/util/uui,services))
+ 
+ $(eval $(call gb_Library_use_external,uui,boost_headers))
++# Beebeeb office fork (task 1567): unlike linguistic/Library_lng.mk (which already
++# guards its curl use with `$(if $(ENABLE_CURL),curl)`), this module's curl dependency
++# was unconditional upstream — a real build failure with --disable-curl
++# ("depend(s) on package curl which does not exist"), not a config oversight on our
++# side. Guarded the same way, plus BB_NO_CURL_OAUTH2 tells
++# uui/source/iahndl-authentication.cxx and iahndl-oauth2 to compile out the one
++# curl-calling code path (the CMIS/WebDAV OAuth2 auth-fallback dialog) instead of a
++# new HAVE_FEATURE_CURL config define, since none exists upstream to hook into.
++# See docs/EGRESS.md.
++ifeq ($(ENABLE_CURL),TRUE)
+ $(eval $(call gb_Library_use_external,uui,curl))
++else
++$(eval $(call gb_Library_add_defs,uui,-DBB_NO_CURL_OAUTH2))
++endif
+ 
+ $(eval $(call gb_Library_use_custom_headers,uui,\
+     officecfg/registry \
+@@ -52,7 +65,6 @@ $(eval $(call gb_Library_add_exception_objects,uui,\
+ 	uui/source/iahndl-filter \
+ 	uui/source/iahndl-ioexceptions \
+ 	uui/source/iahndl-locking \
+-	uui/source/iahndl-oauth2 \
+ 	uui/source/iahndl-ssl \
+ 	uui/source/interactionhandler \
+ 	uui/source/lockfailed \
+@@ -72,4 +84,12 @@ $(eval $(call gb_Library_add_exception_objects,uui,\
+ 	uui/source/unknownauthdlg \
+ ))
+ 
++# See the BB_NO_CURL_OAUTH2 comment above — this file #includes <curl/curl.h>
++# unconditionally, so it is only buildable when curl itself is enabled.
++ifeq ($(ENABLE_CURL),TRUE)
++$(eval $(call gb_Library_add_exception_objects,uui,\
++	uui/source/iahndl-oauth2 \
++))
++endif
++
+ # vim: set noet sw=4 ts=4:
+diff --git a/uui/source/iahndl-authentication.cxx b/uui/source/iahndl-authentication.cxx
+index 2e512503b..b368a4448 100644
+--- a/uui/source/iahndl-authentication.cxx
++++ b/uui/source/iahndl-authentication.cxx
+@@ -57,7 +57,14 @@
+ #include "passworddlg.hxx"
+ 
+ #include "iahndl.hxx"
++// Beebeeb office fork (task 1567): iahndl-oauth2.cxx unconditionally #includes
++// <curl/curl.h> with no upstream feature guard (there is no HAVE_FEATURE_CURL macro
++// anywhere in this tree), so it cannot compile in a --disable-curl build. Excluded
++// here and in Library_uui.mk when BB_NO_CURL_OAUTH2 is defined (see there for why).
++// See docs/EGRESS.md and build/PROGRESS.md for the full rationale.
++#ifndef BB_NO_CURL_OAUTH2
+ #include "iahndl-oauth2.hxx"
++#endif
+ 
+ #include <memory>
+ 
+@@ -770,6 +777,7 @@ UUIInteractionHelper::handleAuthFallbackRequest( const OUString & instructions,
+         uno::Sequence< uno::Reference< task::XInteractionContinuation > > const & rContinuations )
+ {
+     OUString code;
++#ifndef BB_NO_CURL_OAUTH2
+     if (url.indexOf(OAUTH2_REDIRECT_URI_PREFIX) >= 0)
+     {
+         OAuth2Request request(url);
+@@ -777,6 +785,7 @@ UUIInteractionHelper::handleAuthFallbackRequest( const OUString & instructions,
+         code = request.getRetCode();
+     }
+     else
++#endif
+     {
+         uno::Reference<awt::XWindow> xParent = getParentXWindow();
+         AuthFallbackDlg dlg(Application::GetFrameWeld(xParent), instructions, url);
