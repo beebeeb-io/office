@@ -2,12 +2,16 @@
 # Beebeeb office — LibreOffice-core-to-WASM build recipe.
 #
 # Phase 1 spike (task 1567) status: `autogen.sh`/`configure` SUCCEEDS for the HEADLESS
-# module build (--disable-gui, --with-wasm-module="writer calc impress") on this Mac
-# (macOS 26, Apple Silicon arm64) — see build/PROGRESS.md for the 8 real toolchain
-# fixes this took (none of them WASM-specific — all generic "first LO build on this
-# Mac's Homebrew+pyenv mix" gaps). Does NOT attempt the interactive Qt/GUI build in
-# this phase (see docs/PHASE1-FEASIBILITY.md — that needs allotropia's patched Qt5
-# fork and a documented "possibly needs 64GB RAM" link step; this Mac has 32GB).
+# module build (--disable-gui, --with-wasm-module="writer calc impress") on a macOS
+# host — see build/PROGRESS.md for the 8 real toolchain fixes that took (none of them
+# WASM-specific), and the 3 macOS-cross-compile-host bugs that stopped `make` there.
+#
+# Phase 2 (task 1567, this revision): the INTERACTIVE Qt-based editing build, run on
+# Guus's Legion (Arch Linux, WSL2, x86_64, 16 cores, ~50GB RAM to WSL) over SSH, per
+# upstream `static/README.wasm.md`'s Qt-GUI section and allotropia's ZetaOffice forks.
+# Linux-as-build-host was chosen specifically because Phase 1 found its 3 blockers to
+# be macOS-build-host artifacts (see docs/PHASE1-FEASIBILITY.md) — none of the
+# `emsdk`/`qt5`/`core` steps below reference Homebrew, pyenv, or any Darwin-only flag.
 #
 # This script documents the recipe as a reproducible sequence, not a magic one-shot —
 # read build/PROGRESS.md for what has actually been verified vs. what is still to try.
@@ -16,7 +20,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CORE_DIR="$HERE/core"
 EMSDK_DIR="$HERE/emsdk"
-EMSDK_VERSION="3.1.46"   # bumped from the doc's stated 3.1.30 — see PROGRESS.md attempt 1
+QT5_DIR="$HERE/qt5"
+QT5_INSTALL_DIR="$HERE/qt5-install"
+EMSDK_VERSION="3.1.46"       # headless build (Phase 1) — see PROGRESS.md attempt 1
+EMSDK_VERSION_GUI="4.0.10"   # interactive Qt build (Phase 2) — static/README.wasm.md's stated version
+QT5_BRANCH="5.15.2+wasm"     # allotropia's patched Qt5 fork branch
 LO_COMMIT="$(grep '^commit=' "$HERE/PINNED_COMMIT" | cut -d= -f2)"
 
 disk_guard() {
@@ -139,18 +147,133 @@ step_build() {
   echo "build.log at $HERE/build.log — check its tail / exit status for the real outcome (this step runs to completion, not backgrounded, unlike configure)."
 }
 
+### Phase 2 — interactive Qt build (Linux host, e.g. the Legion over SSH) ###
+
+step_emsdk_gui() {
+  [ -d "$EMSDK_DIR" ] || git clone https://github.com/emscripten-core/emsdk.git "$EMSDK_DIR"
+  cd "$EMSDK_DIR"
+  ./emsdk install "$EMSDK_VERSION_GUI"
+  ./emsdk activate "$EMSDK_VERSION_GUI"
+}
+
+step_qt5_clone() {
+  disk_guard
+  if [ ! -d "$QT5_DIR" ]; then
+    git clone https://github.com/allotropia/qt5.git "$QT5_DIR"
+  fi
+  cd "$QT5_DIR"
+  git checkout "$QT5_BRANCH"
+  ./init-repository --module-subset=qtbase
+}
+
+# NOTE (found running this on the Legion, 2026-09-26): upstream's doc shows
+# `./configure ...; make -j<CORES> module-qtbase` run from the `qt5` super-repo
+# checkout. `qtbase` is ALSO a standalone, independently-buildable Qt module repo with
+# its own `configure`/`Makefile` — running configure from *inside* `qt5/qtbase`
+# (rather than `qt5/`) succeeds identically, but then `make module-qtbase` fails
+# (`No rule to make target 'module-qtbase'` — that target only exists in the
+# super-repo's generated Makefile). From inside `qtbase/` directly, the equivalent is
+# plain `make` (no target). Both configure and make below run from `$QT5_DIR/qtbase`.
+step_qt5_configure() {
+  disk_guard
+  load_guard
+  cd "$QT5_DIR/qtbase"
+  # shellcheck disable=SC1091
+  source "$EMSDK_DIR/emsdk_env.sh"
+  ./configure -opensource -confirm-license -xplatform wasm-emscripten -feature-thread \
+    -prefix "$QT5_INSTALL_DIR" \
+    QMAKE_CFLAGS+=-sSUPPORT_LONGJMP=wasm QMAKE_CXXFLAGS+=-sSUPPORT_LONGJMP=wasm \
+    -nomake tests -nomake examples
+}
+
+step_qt5_build() {
+  disk_guard
+  load_guard
+  cd "$QT5_DIR/qtbase"
+  # shellcheck disable=SC1091
+  source "$EMSDK_DIR/emsdk_env.sh"
+  # -j12, capped per the Legion's own instructions (16 cores total, leave headroom).
+  make -j12 > "$HERE/qt5-make.log" 2>&1
+  echo "qt5-make.log at $HERE/qt5-make.log"
+}
+
+step_qt5_install() {
+  cd "$QT5_DIR/qtbase"
+  # shellcheck disable=SC1091
+  source "$EMSDK_DIR/emsdk_env.sh"
+  make -j12 install > "$HERE/qt5-install.log" 2>&1
+}
+
+step_clone_core_gui() {
+  disk_guard
+  if [ ! -d "$CORE_DIR" ]; then
+    git clone --filter=blob:none --depth 1 https://github.com/LibreOffice/core.git "$CORE_DIR"
+  fi
+  cd "$CORE_DIR"
+  if [ "$(git rev-parse HEAD)" != "$LO_COMMIT" ]; then
+    git fetch --depth 1 origin "$LO_COMMIT"
+    git checkout "$LO_COMMIT"
+  fi
+  # Apply ALL of our fork's patches, including the two added for the interactive
+  # build: 0002 (hyperlink click must never window.open/navigate — docs/EGRESS.md #10)
+  # and 0003 (Additions dialog must never auto-fetch — docs/EGRESS.md #3/#4), on top
+  # of 0001 (uui/curl, Phase 1). Idempotent: skips a patch already applied.
+  for p in "$HERE"/../patches/*.patch; do
+    [ -e "$p" ] || continue
+    if ! git apply --check "$p" 2>/dev/null; then
+      if git apply --reverse --check "$p" 2>/dev/null; then
+        echo "already applied, skipping: $p"
+        continue
+      fi
+      echo "FAILED to apply $p — investigate before continuing." >&2
+      exit 1
+    fi
+    git apply "$p"
+    echo "applied: $p"
+  done
+}
+
+step_configure_gui() {
+  disk_guard
+  load_guard
+  cd "$CORE_DIR"
+  cp "$HERE/autogen-gui.input" "$CORE_DIR/autogen.input"
+  # shellcheck disable=SC1091
+  source "$EMSDK_DIR/emsdk_env.sh"
+  rm -rf CONF-FOR-BUILD config.cache config.log autom4te.cache 2>/dev/null || true
+  ./autogen.sh > "$HERE/autogen-gui.log" 2>&1
+  echo "autogen-gui.log at $HERE/autogen-gui.log"
+}
+
+step_build_gui() {
+  disk_guard
+  load_guard
+  cd "$CORE_DIR"
+  # shellcheck disable=SC1091
+  source "$EMSDK_DIR/emsdk_env.sh"
+  make -j12 > "$HERE/build-gui.log" 2>&1
+  echo "build-gui.log at $HERE/build-gui.log"
+}
+
 case "${1:-}" in
   emsdk) step_emsdk ;;
   clone) step_clone_core ;;
   configure) step_configure_headless ;;
   build) step_build ;;
+  emsdk-gui) step_emsdk_gui ;;
+  qt5-clone) step_qt5_clone ;;
+  qt5-configure) step_qt5_configure ;;
+  qt5-build) step_qt5_build ;;
+  qt5-install) step_qt5_install ;;
+  clone-gui) step_clone_core_gui ;;
+  configure-gui) step_configure_gui ;;
+  build-gui) step_build_gui ;;
   *)
-    echo "Usage: $0 {emsdk|clone|configure|build}" >&2
-    echo "Run in order. 'configure' backgrounds itself (nohup) and writes build/BUILD_PID" >&2
-    echo "immediately — poll build/autogen.log. 'build' runs make -j8 to completion in" >&2
-    echo "THIS process (it needs to inspect the log to decide on a known-failure retry)" >&2
-    echo "and can take a very long time — wrap the whole invocation yourself if you want" >&2
-    echo "it backgrounded: nohup $0 build > build/build-wrapper.log 2>&1 &" >&2
+    echo "Usage: $0 {emsdk|clone|configure|build} (Phase 1, headless, macOS spike)" >&2
+    echo "   or: $0 {emsdk-gui|qt5-clone|qt5-configure|qt5-build|qt5-install|clone-gui|configure-gui|build-gui}" >&2
+    echo "       (Phase 2, interactive Qt build, Linux host — run in that order)" >&2
+    echo "Long steps (qt5-build, build-gui) can take hours — wrap in nohup/tmux yourself:" >&2
+    echo "  nohup $0 qt5-build > build/qt5-build-wrapper.log 2>&1 &" >&2
     exit 1
     ;;
 esac

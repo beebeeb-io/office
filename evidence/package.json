@@ -1,0 +1,13 @@
+{
+  "name": "office-evidence",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Task 1567 phase 2 — Playwright evidence harness for the LO-WASM interactive build. Not shipped; local proof-gathering only.",
+  "scripts": {
+    "serve": "bun run serve/server.js",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}

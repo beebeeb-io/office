@@ -2,6 +2,45 @@
 
 **Source pinned at:** LibreOffice/core commit `f8941520720922033948ca14081dbb3dabbbe6b7` (master, 2026-09-26), cloned read-only (`git clone --filter=blob:none --depth 1`) into `build/core/` (gitignored, not vendored into this repo — see `build/PINNED_COMMIT`).
 
+## 2026-09-26 — Phase 2 update: interactive Qt/GUI build, confirmed on the Legion
+
+The two open items row #3/#4 flagged for "the interactive Qt/GUI build" are now closed
+with source patches (not just config flags), and row #10 (hyperlink navigation) now has
+its mitigation implemented, all three on the SAME pinned commit as above, built with
+`--with-distro=LibreOfficeWASM32` (`--enable-qt5`, GUI **on**, not `--disable-gui`) on
+Guus's Legion (Arch Linux, x86_64):
+
+- **#3/#4 (Extension Manager repository / Additions dialog):** `patches/0003-additions-dialog-disable.patch`
+  replaces the single shared chokepoint `sfx2::AdditionsDialogHelper::RunAdditionsDialog`
+  (`sfx2/source/dialog/AdditionsDialogHelper.cxx`, called from all six "get more X
+  online" sites: `cui/source/tabpages/tpcolor.cxx`, `cui/source/options/appearance.cxx`
+  ×2, `cui/source/options/optlingu.cxx` ×2) with a static `weld::MessageDialog` that
+  never constructs `AdditionsDialog` and never touches
+  `https://extensions.libreoffice.org/api/v0/*.json`. This is now "never compiled to
+  fetch," not "compiled but unreachable" — the finding this row flagged as open for
+  the GUI build.
+- **#10 (hyperlink click → external navigation):** `patches/0002-hyperlink-no-navigate.patch`
+  replaces `execute_browser()` in `shell/source/unix/exec/shellexec_em.cxx` — the single
+  emscripten-specific body of `com.sun.star.system.SystemShellExecute`
+  (`shell/source/unix/exec/shellexec.cxx`'s `__EMSCRIPTEN__` branch is the ONLY caller,
+  confirmed by reading the file) — so it dispatches a `beebeeb:hyperlink` DOM
+  `CustomEvent` carrying the URL instead of `window.open(...)`. **No browser-native
+  open/navigate call exists in LO/Qt code after this patch, anywhere** (this was the one
+  path with no native-code disable at all; it now has one). The host page's JS glue
+  (not yet wired — that is goal 3/4's Playwright harness, see below) decides what to
+  show a user; showing a copy-to-clipboard confirmation instead of navigating is
+  task 1567's explicit ask, satisfied at the dispatch layer.
+- **Confirmed against the actual generated `config_host.mk` for this exact build**
+  (not assumed from `configure.ac`'s intent): `ENABLE_CURL=`, `ENABLE_BREAKPAD=`,
+  `ENABLE_ONLINE_UPDATE=`, `ENABLE_EXTENSION_UPDATE=`, `WITH_WEBDAV=` all blank, and
+  (the one that must be the OPPOSITE of the headless build) `DISABLE_GUI=` blank +
+  `ENABLE_QT5=TRUE` — this is a real GUI build, not headless, and the egress
+  guarantees above hold WITH the GUI on, which is the whole point of this phase.
+- **`configure` for the GUI/Qt target succeeded with zero toolchain fixes needed** on
+  the Legion (Arch Linux x86_64, WSL2) — contrast with Phase 1's 8 fixes + 3 build-time
+  bugs on macOS. Real evidence for the Phase 1 recommendation to move off macOS as a
+  build host. See `build/PROGRESS.md` for the Phase 2 log.
+
 **Method:** `grep -rn` across the pinned checkout for every network-capable subsystem named in task 1567 (update check, extension/template manager, online help, crash reporter, telemetry, UNO remote, WebDAV/CMIS, curl, hyperlink handling, font download). This is a source-level audit of the *native* LibreOffice code; it does not yet cover UI-level review of the compiled WASM output (goal 3's automated Playwright egress test, still to build — see "What remains" below).
 
 ## The one flag that matters most: `--disable-curl`

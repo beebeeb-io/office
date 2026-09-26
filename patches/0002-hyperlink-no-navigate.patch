@@ -1,0 +1,29 @@
+diff --git a/shell/source/unix/exec/shellexec_em.cxx b/shell/source/unix/exec/shellexec_em.cxx
+index 219eac969..07d8f8b41 100644
+--- a/shell/source/unix/exec/shellexec_em.cxx
++++ b/shell/source/unix/exec/shellexec_em.cxx
+@@ -19,10 +19,23 @@
+  *     1 error generated.
+  *
+  *  so as a workaround the EM_ASM call is now in an extra file.
++ *
++ * Beebeeb office fork (task 1567): egress finding #10 (docs/EGRESS.md) is that a
++ * hyperlink click, routed here via SystemShellExecute (shellexec.cxx, __EMSCRIPTEN__
++ * branch), is the one navigation-level egress path CSP `connect-src` does not govern
++ * -- upstream's original body here was `window.open(UTF8ToString($0));`, an
++ * unconditional, unconfirmed top-level-navigation-capable call. That is replaced below
++ * with a DOM CustomEvent dispatch: no browser-native open/navigate call is made from
++ * LO/Qt code at all, ever, for a hyperlink. The host page's own JS glue (outside this
++ * WASM module entirely) listens for `beebeeb:hyperlink` on `document` and decides what
++ * to show a user (a copy-to-clipboard confirmation, never an automatic navigation).
+  */
+ 
+ #include <emscripten.h>
+ 
+-void execute_browser(const char* sUrl) { EM_ASM("window.open(UTF8ToString($0));", sUrl); }
++void execute_browser(const char* sUrl)
++{
++    EM_ASM("document.dispatchEvent(new CustomEvent(\x27beebeeb:hyperlink\x27, { detail: { url: UTF8ToString($0) } }));", sUrl);
++}
+ 
+ /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
