@@ -1,8 +1,8 @@
 diff --git a/sfx2/source/dialog/AdditionsDialogHelper.cxx b/sfx2/source/dialog/AdditionsDialogHelper.cxx
-index ec75b4419..1252ad9a6 100644
+index ec75b4419..708413ae1 100644
 --- a/sfx2/source/dialog/AdditionsDialogHelper.cxx
 +++ b/sfx2/source/dialog/AdditionsDialogHelper.cxx
-@@ -7,15 +7,28 @@
+@@ -7,15 +7,29 @@
   * file, You can obtain one at http://mozilla.org/MPL/2.0/.
   */
  
@@ -10,6 +10,7 @@ index ec75b4419..1252ad9a6 100644
 +
  #include <sfx2/AdditionsDialogHelper.hxx>
  #include <vcl/abstdlg.hxx>
++#include <vcl/vclenum.hxx>
 +#include <vcl/svapp.hxx>
 +#include <vcl/weld/MessageDialog.hxx>
  
