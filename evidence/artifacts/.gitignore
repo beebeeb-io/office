@@ -1,0 +1,6 @@
+# Large build binaries — never committed. MANIFEST.sha256 in this directory is the
+# reproducibility record (sha256 + sizes); re-download from the Legion or rebuild
+# with build/wasm.sh.
+emscripten/
+*.wasm
+*.data

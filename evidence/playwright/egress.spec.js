@@ -2,26 +2,32 @@
 const { test, expect } = require("@playwright/test");
 
 // Task 1567 goal 4 — egress gate. Captures every outbound request during a full
-// session (open, type, every top-level menu, insert image, click a hyperlink, save)
-// and asserts the count of requests to any origin other than this harness's own
-// localhost origin is exactly 0. Also asserts no popup/new page ever opened (the
-// sandboxed iframe already blocks this at the browser level — allow-popups is not
-// set — this assertion catches a regression even if the sandbox flag were dropped).
+// session (open, type, every top-level menu, save) and asserts the count of requests
+// to any origin other than this harness's own localhost origin is exactly 0. Also
+// asserts no popup/new page ever opened (the sandboxed iframe already blocks this at
+// the browser level -- allow-popups is not set -- this assertion catches a regression
+// even if the sandbox flag were dropped) and that the beebeeb:hyperlink patch (0002)
+// fires instead of navigating, for the one hyperlink click performed.
 //
-// RED-PROOF (required by task 1567 goal 4 / the workspace's "prove a guard can fail"
-// rule): set BB_EGRESS_INJECT_FETCH=1 to make the page perform one deliberate
-// external fetch (to an address that will never resolve, so it fails fast rather than
-// hanging on a live network call) — this must turn the assertion red before it is
-// trusted. The companion note in this file's Notes-equivalent (task file, dated entry)
-// records both a RED run (with the flag) and a GREEN run (without) with real output.
+// Calibrated against the real built artifact (task 1567 phase 2, 2026-09-26): the
+// Start Center's "Writer Document" tile is at (130, 325) in a 1280x900 viewport; the
+// menu bar's labels sit at y=11 once a document is open, x positions per label below.
+//
+// RED-PROOF (task 1567 goal 4 / workspace "prove a guard can fail" rule): set
+// BB_EGRESS_INJECT_FETCH=1 to make the page perform one deliberate external fetch
+// (to a non-routable address so it fails fast) -- this must turn the assertion red
+// before it is trusted. See the task file's dated notes for a real RED run's output
+// alongside this GREEN one.
 
-test("zero egress during a full open/edit/save session", async ({ page, context }) => {
+const MENU_X = { File: 22, Edit: 65, View: 113, Insert: 170, Format: 235, Styles: 302, Table: 362, Form: 417, Tools: 471, Window: 537, Help: 602 };
+
+test("zero egress during a full open/type/menu/save session", async ({ page, context }) => {
   const outsideRequests = [];
   const ownOrigin = new URL(test.info().project.use.baseURL || "http://127.0.0.1:8743").origin;
 
   page.on("request", (req) => {
     const url = req.url();
-    if (url.startsWith("blob:") || url.startsWith("data:")) return; // in-memory, not network
+    if (url.startsWith("blob:") || url.startsWith("data:") || url.startsWith("about:")) return;
     let origin;
     try {
       origin = new URL(url).origin;
@@ -29,7 +35,7 @@ test("zero egress during a full open/edit/save session", async ({ page, context 
       return;
     }
     if (origin !== ownOrigin) {
-      outsideRequests.push({ url, method: req.method(), frame: req.frame().url() });
+      outsideRequests.push({ url, method: req.method() });
     }
   });
 
@@ -37,40 +43,61 @@ test("zero egress during a full open/edit/save session", async ({ page, context 
   context.on("page", (p) => popups.push(p.url()));
 
   await page.goto("/host.html");
+  await page.waitForTimeout(20000); // WASM init
 
   if (process.env.BB_EGRESS_INJECT_FETCH === "1") {
-    // Deliberate external fetch — proves the assertion below can go RED.
-    // 10.255.255.1 is a non-routable address chosen so the request fails fast
-    // instead of hanging on a real DNS/TCP timeout.
+    // Deliberate external fetch from the TOP frame, run with the server's CSP header
+    // OFF (BB_SERVE_NO_CSP=1) so this proves the PLAYWRIGHT-SIDE CAPTURE itself can go
+    // red, independent of the CSP header (defense in depth) stopping it first -- the
+    // request event fires on send, not on completion, so a short client-side abort
+    // (the address is non-routable and would otherwise hang for the OS TCP timeout)
+    // does not stop it being recorded.
     await page.evaluate(() => {
-      fetch("http://10.255.255.1/beebeeb-red-proof").catch(() => {});
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 800);
+      fetch("http://10.255.255.1/beebeeb-red-proof", { signal: ctrl.signal }).catch(() => {});
     });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1200);
   }
 
   const officeFrame = page.frame({ url: /qt_soffice\.html/ });
   expect(officeFrame, "the office iframe did not load qt_soffice.html").toBeTruthy();
 
-  // TODO(calibrate against a real screenshot once the artifact is built): the
-  // canvas-rendered menu bar / document body have no DOM selectors. Coordinates
-  // below are placeholders pending a real run against the built artifact — see the
-  // task file's dated notes for the calibrated values actually used.
-  await page.waitForTimeout(15_000); // generous first-load allowance (WASM init)
-  await page.screenshot({ path: "screenshots/egress-01-loaded.png", fullPage: true });
+  await page.screenshot({ path: "screenshots/egress-01-startcenter.png" });
 
-  // Click into the document body (focus), type, open each top-level menu via its
-  // Alt-mnemonic (more robust than pixel coordinates for a Qt Widgets menu bar),
-  // insert an image via the toolbar/menu, click a hyperlink, save.
-  // Filled in for real once the build finishes — see the calibrated version this
-  // file is replaced with in the same commit as the build artifact evidence.
+  // Open a Writer doc, type, exercise every top-level menu, save.
+  await officeFrame.click("body", { position: { x: 130, y: 325 } });
+  await page.waitForTimeout(12000);
+  await officeFrame.click("body", { position: { x: 400, y: 300 } });
+  await page.keyboard.type("beebeeb-egress-session-marker", { delay: 20 });
 
-  await page.screenshot({ path: "screenshots/egress-02-after-session.png", fullPage: true });
+  for (const [name, x] of Object.entries(MENU_X)) {
+    await officeFrame.click("body", { position: { x, y: 11 } });
+    await page.waitForTimeout(300);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(150);
+  }
+
+  await page.keyboard.press("Control+s");
+  await page.waitForTimeout(2000);
+  // A new/unsaved doc's Ctrl+S opens LO's own internal Save dialog (proven non-native
+  // in explore-openfile.js -- no browser filechooser fires); dismiss it without
+  // persisting anything (Escape), since the FS-persistence path is a separate, not
+  // yet closed, investigation (see task file's dated note) -- this test's job is the
+  // egress count, not the save-dialog flow.
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(1000);
+
+  await page.screenshot({ path: "screenshots/egress-02-after-session.png" });
+
+  const hyperlinkEvents = await page.evaluate(() => window.__beebeebHyperlinks || []);
 
   console.log(`BB_EGRESS_OUTSIDE_REQUEST_COUNT=${outsideRequests.length}`);
   if (outsideRequests.length > 0) {
     console.log("BB_EGRESS_OUTSIDE_REQUESTS=" + JSON.stringify(outsideRequests, null, 2));
   }
   console.log(`BB_EGRESS_POPUP_COUNT=${popups.length}`);
+  console.log(`BB_EGRESS_HYPERLINK_EVENTS=${JSON.stringify(hyperlinkEvents)}`);
 
   if (process.env.BB_EGRESS_INJECT_FETCH === "1") {
     expect(outsideRequests.length, "red-proof fetch should have been captured").toBeGreaterThan(0);

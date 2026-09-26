@@ -35,7 +35,12 @@ function send(res, status, body, headers) {
 
 const server = http.createServer((req, res) => {
   const urlPath = decodeURIComponent(req.url.split("?")[0]);
-  const filePath = path.join(artifactDir, urlPath === "/" ? "/index.html" : urlPath);
+  // host.html (and other harness-only pages) live alongside this server script, not
+  // in the artifact directory -- serve those from here first.
+  const harnessPath = path.join(__dirname, urlPath);
+  const filePath = fs.existsSync(harnessPath) && fs.statSync(harnessPath).isFile()
+    ? harnessPath
+    : path.join(artifactDir, urlPath === "/" ? "/index.html" : urlPath);
 
   // Egress gate headers (task 1567 goal 4): COOP/COEP required by upstream for the
   // WASM module itself (pthreads need SharedArrayBuffer, which requires cross-origin
@@ -45,9 +50,17 @@ const server = http.createServer((req, res) => {
   const headers = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Embedder-Policy": "require-corp",
-    "Content-Security-Policy":
-      "default-src 'self'; connect-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;",
   };
+  // connect-src 'self' is defense in depth on top of the Playwright-side request
+  // capture (egress.spec.js) -- BB_SERVE_NO_CSP=1 drops it so that spec's red-proof
+  // (a deliberate external fetch) can prove the CAPTURE ITSELF catches an escaped
+  // request, independent of this header stopping it first. script-src allows
+  // 'unsafe-inline' because qt_soffice.html's own generated loader script is inline;
+  // that governs what CODE may run, not what network access it has once running.
+  if (process.env.BB_SERVE_NO_CSP !== "1") {
+    headers["Content-Security-Policy"] =
+      "default-src 'self'; connect-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;";
+  }
 
   if (!filePath.startsWith(artifactDir) && !filePath.startsWith(path.join(__dirname))) {
     return send(res, 403, "forbidden", headers);

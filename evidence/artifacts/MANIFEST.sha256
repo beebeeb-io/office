@@ -1,0 +1,40 @@
+# Task 1567 phase 2 — LO-WASM-Qt interactive editor build artifacts
+# Built on Guus's Legion (Arch Linux, WSL2, x86_64, 16 cores) 2026-09-26.
+# LibreOffice/core pinned commit f8941520720922033948ca14081dbb3dabbbe6b7 (master),
+# patches applied in order: 0001, 0002, 0003, 0004 (repo patches/).
+# Qt: allotropia/qt5 branch 5.15.2+wasm (qtbase module only). Emscripten 4.0.10.
+# Config: --with-distro=LibreOfficeWASM32 --with-wasm-module="writer calc impress"
+#   plus egress flags (see build/autogen-gui.input).
+#
+# These binaries are NOT committed to git (see .gitignore in this directory) —
+# this file is the reproducibility record. Re-download from the Legion at
+# /home/guus/bb-office/core/workdir/installation/LibreOffice/emscripten/ or rebuild
+# with build/wasm.sh (emsdk-gui, qt5-clone, qt5-configure, qt5-build, qt5-install,
+# clone-gui, configure-gui, build-gui, in that order).
+
+8a4ecdf3c7aaebd997c50caaca72a861e9e956e0685e543805e5e1446e58b989  soffice.wasm    171729371 bytes
+ff38ef01972ab96871240c3f9d2f49483efbc1636f985305aa385cd07cb5fd92  soffice.js      840288 bytes
+cb3fcfa5861c0c799fd587273a46b629590f7deca64189e49cfa0b9374e1290d  soffice.data    96316943 bytes
+6390f38f756010c219f4293247c07817c1cfb9c4db27da01783cbb3393438117  soffice.data.js.metadata  213445 bytes
+379ae1ec89c7b126913dd4b77f4167a5f0ce24edb80a11004fe07bfd2ab1c7b3  qt_soffice.html 3229 bytes
+
+# Total bundle (workdir/installation/LibreOffice/emscripten/, --with-package-format=emscripten): 257MB, 9 files
+# (also: favicon.ico, qtloader.js, qtlogo.svg — static Qt/browser-integration assets, unmodified from the Qt/LO build, not separately hashed here)
+
+## Build numbers (all from /usr/bin/time -v on the Legion, real measurements)
+
+| Attempt | Outcome | Wall time | Peak RSS |
+|---|---|---|---|
+| 1 (build-gui.log) | FAILED — missing #include in patch 0003 | 12:58.14 | 4.94 GB |
+| 2 (build-gui-2.log) | FAILED — undefined FT_* symbols at soffice.js link (real gbuild gap, patch 0004) | 11:22.13 | 2.50 GB |
+| 3 (build-gui-3.log) | FAILED — wrong gbuild macro in first 0004 attempt | 0:06.26 | 0.22 GB |
+| 4 (build-gui-4.log) | FAILED — \x27 escape survives EM_ASM stringification (patch 0002 bug) — wasm-ld itself SUCCEEDED this attempt | 4:37.96 | 7.33 GB |
+| 5 (build-gui-5.log) | SUCCESS | 3:21.12 | 7.32 GB |
+| **Total (sum of make invocations)** | | **32:25.61** | **7.33 GB peak (attempt 4)** |
+
+Real wall-clock from first `make -j12` start (21:12:43 CEST) to artifact existing
+(21:52 CEST): ~40 minutes, including diagnosis/patch-writing time between attempts.
+Peak RSS across every attempt never exceeded 7.33GB — well under both the Legion's
+50GB and upstream doc's own "possibly needs 64GB RAM" warning for the link step (that
+warning is likely for a debug/example/source-map build; this is a release-style -O3
+build with -sASSERTIONS=1 but no source maps).

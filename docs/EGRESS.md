@@ -40,6 +40,20 @@ Guus's Legion (Arch Linux, x86_64):
   the Legion (Arch Linux x86_64, WSL2) — contrast with Phase 1's 8 fixes + 3 build-time
   bugs on macOS. Real evidence for the Phase 1 recommendation to move off macOS as a
   build host. See `build/PROGRESS.md` for the Phase 2 log.
+- **The build succeeded** (2026-09-26, 5 `make` attempts, 2 new real bugs found and
+  patched — 0002's own `\x27`-escape bug and 0004's freetype link gap — neither
+  egress-related, both build-mechanics). `docs/PHASE2-RESULTS.md` has full numbers.
+  **Both new patches are confirmed compiling into the successful artifact.**
+- **Egress gate run for real** against the built artifact: a full session (open a
+  Writer doc, type, click through all 11 top-level menus, Ctrl+S) captured via
+  Playwright shows **0 requests to any non-`self` origin, 0 popups**
+  (`evidence/playwright/egress.spec.js`, GREEN). The gate's own red-proof
+  (`BB_EGRESS_INJECT_FETCH=1`, with the server's CSP header removed so the CSP itself
+  isn't what stops it) shows the capture correctly catches an escaped request
+  (count=1). **Not yet exercised in this session:** the "insert an image" and "click a
+  hyperlink" steps of the full egress session named in task 1567's own goal 4 — no
+  file-based image-insert path was found working yet (see the file-I/O open item in
+  `docs/PHASE2-RESULTS.md`), and no hyperlink was created in a document to click.
 
 **Method:** `grep -rn` across the pinned checkout for every network-capable subsystem named in task 1567 (update check, extension/template manager, online help, crash reporter, telemetry, UNO remote, WebDAV/CMIS, curl, hyperlink handling, font download). This is a source-level audit of the *native* LibreOffice code; it does not yet cover UI-level review of the compiled WASM output (goal 3's automated Playwright egress test, still to build — see "What remains" below).
 
