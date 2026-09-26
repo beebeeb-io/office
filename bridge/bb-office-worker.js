@@ -63,6 +63,56 @@
  *
  * One document open at a time (matches task 1567's minimal API ask). Opening a
  * second document closes the first.
+ *
+ * PHASE 4 ADDITIONS (task 1567 goal 4, 2026-09-27) -- UNO dispatch + status
+ * listeners, outline, zoom, newDocument, and change events. Two message
+ * shapes now flow over the SAME port:
+ *   - request/response (as above): every message has an `id`; exactly one
+ *     reply comes back for it.
+ *   - unsolicited EVENTS (no `id`): { event: "statusChanged", listenerId, state }
+ *                                   { event: "modified", modified: boolean }
+ *                                   { event: "selectionChanged", text }
+ *     bb-office-api.js's onmessage tells these apart by the presence of
+ *     `event` instead of `id`.
+ *
+ * New request ops:
+ *   { op: "dispatch", id, command, args? }
+ *     -> { ok, kind: "dispatch" }
+ *   { op: "addStatusListener", id, command }
+ *     -> { ok, kind: "addStatusListener", listenerId, initial: {isEnabled, state} }
+ *        (UNO's addStatusListener guarantees one synchronous callback with the
+ *        CURRENT state before it returns -- that value rides THIS reply's
+ *        `initial` field rather than a separate "statusChanged" event, since
+ *        the latter provably races the caller's own event-subscriber
+ *        bookkeeping: confirmed empirically, 2026-09-27, see the comment on
+ *        doAddStatusListener. Only LATER real changes arrive as events.)
+ *   { op: "removeStatusListener", id, listenerId } -> { ok }
+ *   { op: "getOutline", id } -> { ok, kind: "getOutline", result: [{level, text}] }
+ *     Writer only; a non-Writer active document returns an empty outline
+ *     rather than throwing (no heading concept in Calc/Impress).
+ *   { op: "goToHeading", id, index } -> { ok }
+ *   { op: "setZoom", id, percent } -> { ok }
+ *   { op: "newDocument", id, kind, templateBytes? }
+ *     kind: "writer"|"calc"|"impress"; templateBytes optional (Uint8Array) ->
+ *     opened with AsTemplate:true so saving never overwrites the template.
+ *     -> { ok, kind: "newDocument", result: { docKind } }
+ *   { op: "addModifiedListener", id } -> { ok, listenerId }
+ *   { op: "removeModifiedListener", id, listenerId } -> { ok }
+ *   { op: "addSelectionListener", id } -> { ok, listenerId }
+ *   { op: "removeSelectionListener", id, listenerId } -> { ok }
+ *
+ * KNOWN GAP, not resolved (3 real attempts, documented in the task file's
+ * 2026-09-27 phase-4 note): the selectionChanged event carries the selected
+ * TEXT, not a screen-pixel rect. com.sun.star.accessibility.XAccessible does
+ * not resolve on either the document window or its controller in this build
+ * (getAvailableServiceNames() lists zero com.sun.star.accessibility.* service
+ * implementations at all), which is the one generic, app-agnostic UNO
+ * mechanism that exposes on-screen geometry for an arbitrary selection --
+ * this WASM target appears to compile out the accessibility bridge entirely
+ * (native AT-SPI/IAccessible2/UIA glue has no WASM equivalent). No rect-based
+ * floating-toolbar positioning is possible through UNO alone as a result;
+ * the caller would need to derive a rect some other way (e.g. Qt canvas
+ * hit-testing) if this is required later.
  */
 
 (function () {
@@ -121,6 +171,108 @@
     return out;
   }
 
+  // Task 1567 goal 2 (phase 4, 2026-09-27): document-only canvas. Every
+  // UNO-API-opened document gets its OWN frame/window (confirmed empirically:
+  // XFramesSupplier.getFrames() goes from 1 -> 2 after a single
+  // loadComponentFromURL call) -- it does NOT automatically become the
+  // visible one; the Start Center frame stays on top until something calls
+  // toFront()/setVisible(true) on the new window (screenshotted proof:
+  // evidence/screenshots/probe-chrome3-tofront.png). This is the ONE function
+  // every document-opening path (doOpen, doNewDocument) must call.
+  //
+  // Hides: menubar, all toolbars, statusbar, sidebar deck (all five are
+  // children of the SAME XLayoutManager -- confirmed empirical enumeration
+  // showed 15 docked elements under one manager, and
+  // XLayoutManager::setVisible(false) hides all of them in one call, more
+  // reliable than hiding each by name since toolbar resource URLs differ per
+  // module (Writer/Calc/Impress each have their own object-bar names) --
+  // .lock() additionally stops LO re-showing a context toolbar later (e.g.
+  // Impress's picture toolbar on shape selection)); rulers (off by default in
+  // this build for Writer's vertical ruler, ON by default for the horizontal
+  // one -- both explicitly forced off here since the ONLY place that
+  // property exists is Writer's ViewSettings, wrapped in try/catch since
+  // Calc/Impress throw UnknownPropertyException for it, confirmed
+  // empirically). Does NOT hide: the native Qt window title bar. Attempted
+  // (patches/0005-emscripten-frameless-window-REVERTED.patch,
+  // Qt::FramelessWindowHint) and it DID remove the bar, but it also broke the
+  // toFront()/setVisible() switch below -- the newly created document's frame
+  // stopped becoming the visible one on the shared #qtcanvas at all, tested
+  // both ways (evidence/probe-chrome3.js run against both artifacts).
+  // Reverted rather than ship a document that opens invisibly. This is an
+  // OPEN item -- see that patch file's own notes for the next angle to try
+  // (the Qt WASM QPA's window-activation/compositing code) or a host-page
+  // CSS crop as a product-level workaround instead of an engine fix. This
+  // function also explicitly closes the Start Center (see
+  // closeOtherEmptyFrames below) since no config/UNO call makes an
+  // ALREADY-CREATED Start Center frame stop
+  // being its own separate top-level frame.
+  function applyDocumentChrome(model) {
+    var css = Module.uno.com.sun.star;
+    var controller = getController(model);
+    var frame = controller.getFrame();
+    var containerWindow = frame.getContainerWindow();
+
+    try {
+      var xTopWindow = css.awt.XTopWindow.query(containerWindow);
+      if (xTopWindow) xTopWindow.toFront();
+      var xWindow = css.awt.XWindow.query(containerWindow);
+      xWindow.setVisible(true);
+      xWindow.setFocus();
+    } catch (e) {
+      console.error("bb-office-worker: applyDocumentChrome toFront/setVisible failed:", e);
+    }
+
+    try {
+      var ps = css.beans.XPropertySet.query(frame);
+      var lm = css.frame.XLayoutManager.query(ps.getPropertyValue("LayoutManager").get());
+      if (lm) {
+        lm.setVisible(false);
+        lm.lock();
+      }
+    } catch (e) {
+      /* best-effort */
+    }
+
+    try {
+      var vss = css.view.XViewSettingsSupplier.query(controller);
+      if (vss) {
+        var viewSettings = vss.getViewSettings();
+        viewSettings.setPropertyValue("ShowHoriRuler", new Module.uno_Any(Module.uno_Type.Boolean(), false));
+        viewSettings.setPropertyValue("ShowVertRuler", new Module.uno_Any(Module.uno_Type.Boolean(), false));
+      }
+    } catch (e) {
+      /* Calc/Impress: no ruler properties on their ViewSettings -- not an error */
+    }
+
+    closeOtherEmptyFrames(model);
+  }
+
+  // Closes every OTHER top-level frame that has no document model at all
+  // (the Start Center's own "StartModule" component, or a leftover empty
+  // frame) -- never a frame that holds a real document, even an unsaved one.
+  function closeOtherEmptyFrames(keepModel) {
+    var css = Module.uno.com.sun.star;
+    var ctx = Module.getUnoComponentContext();
+    var desktop = css.frame.Desktop.create(ctx);
+    var framesSupplier = css.frame.XFramesSupplier.query(desktop);
+    var frames = framesSupplier.getFrames();
+    var n = frames.getCount ? frames.getCount() : frames.size();
+    for (var i = 0; i < n; i++) {
+      var f = frames.getByIndex ? frames.getByIndex(i).get() : frames.get(i);
+      var xf = css.frame.XFrame.query(f);
+      var frameController = xf.getController();
+      var comp = frameController ? frameController.getModel() : null;
+      if (comp === keepModel) continue;
+      if (!comp) {
+        try {
+          xf.close(false);
+        } catch (e) {
+          /* best-effort */
+        }
+      }
+    }
+  }
+
   function doOpen(bytesU8, filename) {
     var css = Module.uno.com.sun.star;
     var ctx = Module.getUnoComponentContext();
@@ -163,6 +315,7 @@
     state.model = model;
     state.saveExt = MODERN_EQUIVALENT[ext] || ext;
     state.openFilename = filename;
+    applyDocumentChrome(model);
     return { ext: ext, saveExt: state.saveExt };
   }
 
@@ -294,6 +447,420 @@
     return { executed: true };
   }
 
+  // ---------------------------------------------------------------------
+  // Phase 4: UNO dispatch, status/modified/selection listeners, outline,
+  // zoom, newDocument. See the file header's PROTOCOL section.
+  // ---------------------------------------------------------------------
+
+  // The doc opened via bbOffice.open() (state.model) is authoritative when
+  // present; otherwise fall back to whatever LO itself currently considers
+  // active (a document opened by a real UI click through the Start Center,
+  // which never goes through doOpen()). Confirmed empirically (2026-09-27):
+  // getCurrentComponent() returns a live, non-null, freshly-queried wrapper
+  // each call -- do not compare it by `===` to a previously held reference,
+  // just use it directly each time.
+  function getActiveModel() {
+    if (state.model) return state.model;
+    var css = Module.uno.com.sun.star;
+    var ctx = Module.getUnoComponentContext();
+    var desktop = css.frame.Desktop.create(ctx);
+    return css.frame.XDesktop.query(desktop).getCurrentComponent();
+  }
+
+  function getController(model) {
+    var css = Module.uno.com.sun.star;
+    return css.frame.XModel.query(model).getCurrentController();
+  }
+
+  // com.sun.star.util.URL (offapi/com/sun/star/util/URL.idl) -- ALL fields
+  // must be present on the InOutParam constructor or embind throws
+  // "Missing field" (confirmed empirically; the type is not tolerant of a
+  // partial object the way a plain-in PropertyValue struct is).
+  function parseUnoUrl(commandUrl) {
+    var css = Module.uno.com.sun.star;
+    var ctx = Module.getUnoComponentContext();
+    var InOutURL = Module["uno_InOutParam_com$sun$star$util$URL"];
+    var inst = new InOutURL({
+      Complete: commandUrl, Main: "", Protocol: "", User: "", Password: "",
+      Server: "", Port: 0, Path: "", Name: "", Arguments: "", Mark: "",
+    });
+    var trans = css.util.URLTransformer.create(ctx);
+    trans.parseStrict(inst);
+    return inst.val;
+  }
+
+  function doDispatch(command, argsList) {
+    var css = Module.uno.com.sun.star;
+    var model = getActiveModel();
+    if (!model) {
+      throw new Error("bbOffice.dispatch: no active document");
+    }
+    var frame = getController(model).getFrame();
+    var dp = css.frame.XDispatchProvider.query(frame);
+    var url = parseUnoUrl(command);
+    var disp = dp.queryDispatch(url, "", 0);
+    if (!disp) {
+      throw new Error("bbOffice.dispatch: no dispatch handler for " + command);
+    }
+    var pvs = (argsList || []).map(function (a) {
+      var t;
+      if (typeof a.value === "boolean") t = Module.uno_Type.Boolean();
+      else if (typeof a.value === "number") t = Module.uno_Type.Long();
+      else t = Module.uno_Type.String();
+      return mkPV(a.name, t, a.value);
+    });
+    var seq = new Module.uno_Sequence_com$sun$star$beans$PropertyValue(pvs);
+    try {
+      disp.dispatch(url, seq);
+    } finally {
+      seq.delete();
+    }
+    return { dispatched: true };
+  }
+
+  // listenerId -> { dispose: function() } for every kind of listener below,
+  // in one registry -- the page only ever needs to hand the id back on
+  // remove, never cares what kind it was.
+  var listeners = {};
+  var nextListenerId = 1;
+
+  function doAddStatusListener(port, command) {
+    var css = Module.uno.com.sun.star;
+    var model = getActiveModel();
+    if (!model) {
+      throw new Error("bbOffice.onState: no active document");
+    }
+    var frame = getController(model).getFrame();
+    var dp = css.frame.XDispatchProvider.query(frame);
+    var url = parseUnoUrl(command);
+    var disp = dp.queryDispatch(url, "", 0);
+    if (!disp) {
+      throw new Error("bbOffice.onState: no dispatch handler for " + command);
+    }
+    var listenerId = nextListenerId++;
+    // UNO's addStatusListener fires ONE synchronous callback with the current
+    // state before it returns. If that callback just posts a normal "event"
+    // message, it provably races the page's own subscription bookkeeping: the
+    // page only calls eventSubscribers.set(listenerId, cb) AFTER this whole
+    // op's reply resolves, but this synchronous callback fires (and its
+    // postMessage arrives) BEFORE that reply is even sent -- confirmed
+    // empirically (2026-09-27, evidence/probe-api-e2e.js): the initial value
+    // was silently dropped, only later real toggles came through. Fix: buffer
+    // the first callback and return it as part of THIS op's own reply instead
+    // of as a separate event -- no race is possible on a value carried by the
+    // reply the caller is already awaiting.
+    var gotInitial = false;
+    var initialState = null;
+    var listenerObj = {
+      statusChanged: function (evt) {
+        var value;
+        try {
+          value = evt.State.get();
+        } catch (e) {
+          value = null;
+        }
+        var payload = { isEnabled: !!evt.IsEnabled, state: value };
+        if (!gotInitial) {
+          gotInitial = true;
+          initialState = payload;
+          return;
+        }
+        port.postMessage({
+          event: "statusChanged",
+          listenerId: listenerId,
+          command: command,
+          isEnabled: payload.isEnabled,
+          state: payload.state,
+        });
+      },
+      disposing: function () {},
+    };
+    var ref = Module.unoObject(["com.sun.star.frame.XStatusListener"], listenerObj);
+    var xStatusListener = css.frame.XStatusListener.query(ref);
+    disp.addStatusListener(xStatusListener, url); // fires the current state synchronously, into initialState above
+    listeners[listenerId] = {
+      dispose: function () {
+        disp.removeStatusListener(xStatusListener, url);
+      },
+    };
+    return { listenerId: listenerId, initial: initialState };
+  }
+
+  function doAddModifiedListener(port) {
+    var css = Module.uno.com.sun.star;
+    var model = getActiveModel();
+    if (!model) {
+      throw new Error("bbOffice.onModifiedChange: no active document");
+    }
+    var xModifiable = css.util.XModifiable.query(model);
+    var listenerId = nextListenerId++;
+    var listenerObj = {
+      modified: function () {
+        var modified = false;
+        try {
+          modified = !!xModifiable.isModified();
+        } catch (e) {
+          /* document may be closing */
+        }
+        port.postMessage({ event: "modified", listenerId: listenerId, modified: modified });
+      },
+      disposing: function () {},
+    };
+    var ref = Module.unoObject(["com.sun.star.util.XModifyListener"], listenerObj);
+    var xModifyListener = css.util.XModifyListener.query(ref);
+    xModifiable.addModifyListener(xModifyListener);
+    listeners[listenerId] = {
+      dispose: function () {
+        xModifiable.removeModifyListener(xModifyListener);
+      },
+    };
+    return listenerId;
+  }
+
+  function doAddSelectionListener(port) {
+    // See the file header's "KNOWN GAP" note: no screen rect is available in
+    // this build (no accessibility bridge). This reports the selected text
+    // only.
+    var css = Module.uno.com.sun.star;
+    var model = getActiveModel();
+    if (!model) {
+      throw new Error("bbOffice.onSelectionChange: no active document");
+    }
+    var controller = getController(model);
+    var xSelSupplier = css.view.XSelectionSupplier.query(controller);
+    var listenerId = nextListenerId++;
+    var listenerObj = {
+      selectionChanged: function () {
+        var text = "";
+        try {
+          var sel = xSelSupplier.getSelection();
+          var xTextRange = css.text.XTextRange.query(sel && sel.get ? sel.get() : sel);
+          if (xTextRange) text = xTextRange.getString();
+        } catch (e) {
+          /* non-text selection (e.g. a Calc cell range, a Draw shape) -- not
+             an error, just nothing to report as text */
+        }
+        port.postMessage({ event: "selectionChanged", listenerId: listenerId, text: text });
+      },
+      disposing: function () {},
+    };
+    var ref = Module.unoObject(["com.sun.star.view.XSelectionChangeListener"], listenerObj);
+    var xListener = css.view.XSelectionChangeListener.query(ref);
+    xSelSupplier.addSelectionChangeListener(xListener);
+    listeners[listenerId] = {
+      dispose: function () {
+        xSelSupplier.removeSelectionChangeListener(xListener);
+      },
+    };
+    return listenerId;
+  }
+
+  function doRemoveListener(listenerId) {
+    var l = listeners[listenerId];
+    if (!l) return { removed: false };
+    delete listeners[listenerId];
+    l.dispose();
+    return { removed: true };
+  }
+
+  // Writer-only; the heading paragraph style convention ("Heading 1".."Heading
+  // 10") is the internal, locale-independent UNO ParaStyleName -- confirmed
+  // against the running document (2026-09-27 probes), not the localized
+  // display name a user sees in the sidebar.
+  var HEADING_RE = /^Heading (\d+)$/;
+
+  function enumerateHeadingParagraphs(model) {
+    var css = Module.uno.com.sun.star;
+    var xTextDocument = css.text.XTextDocument.query(model);
+    if (!xTextDocument) return [];
+    var xText = xTextDocument.getText();
+    var enumAccess = css.container.XEnumerationAccess.query(xText);
+    var en = enumAccess.createEnumeration();
+    var headings = [];
+    while (en.hasMoreElements()) {
+      var anyEl = en.nextElement();
+      var parEl = anyEl.get ? anyEl.get() : anyEl;
+      var parProps = css.beans.XPropertySet.query(parEl);
+      var styleName = "";
+      try {
+        styleName = parProps.getPropertyValue("ParaStyleName").get();
+      } catch (e) {
+        continue;
+      }
+      var m = HEADING_RE.exec(styleName);
+      if (!m) continue;
+      var parRange = css.text.XTextRange.query(parEl);
+      headings.push({ level: parseInt(m[1], 10), text: parRange.getString(), range: parRange });
+    }
+    return headings;
+  }
+
+  function doGetOutline() {
+    var model = getActiveModel();
+    if (!model) return [];
+    return enumerateHeadingParagraphs(model).map(function (h) {
+      return { level: h.level, text: h.text };
+    });
+  }
+
+  function doGoToHeading(index) {
+    var model = getActiveModel();
+    if (!model) {
+      throw new Error("bbOffice.goToHeading: no active document");
+    }
+    var headings = enumerateHeadingParagraphs(model);
+    var h = headings[index];
+    if (!h) {
+      throw new Error("bbOffice.goToHeading: no heading at index " + index + " (outline has " + headings.length + ")");
+    }
+    var css = Module.uno.com.sun.star;
+    var controller = getController(model);
+    var vcs = css.text.XTextViewCursorSupplier.query(controller);
+    if (!vcs) {
+      throw new Error("bbOffice.goToHeading: active document has no text view cursor");
+    }
+    var viewCursor = vcs.getViewCursor();
+    viewCursor.gotoRange(h.range.getStart(), false);
+    return { level: h.level, text: h.text };
+  }
+
+  // Zoom is NOT uniform across apps (confirmed empirically, 2026-09-27):
+  // Writer's controller implements com.sun.star.view.XViewSettingsSupplier,
+  // whose getViewSettings() is a SEPARATE XPropertySet carrying ZoomValue --
+  // querying XPropertySet directly on the Writer controller itself succeeds
+  // (query does not throw) but getPropertyValue("ZoomValue") then throws
+  // UnknownPropertyException, so this order matters, it is not just
+  // defensive. Calc and Impress controllers have NO XViewSettingsSupplier at
+  // all (query returns null, no exception) and instead expose ZoomValue as a
+  // property directly ON the controller.
+  function getZoomPropertySet(controller) {
+    var css = Module.uno.com.sun.star;
+    var vss = css.view.XViewSettingsSupplier.query(controller);
+    if (vss) return vss.getViewSettings(); // Writer
+    return css.beans.XPropertySet.query(controller); // Calc / Impress
+  }
+
+  function doSetZoom(percent) {
+    var model = getActiveModel();
+    if (!model) {
+      throw new Error("bbOffice.setZoom: no active document");
+    }
+    var controller = getController(model);
+    var propSet = getZoomPropertySet(controller);
+    if (!propSet) {
+      throw new Error("bbOffice.setZoom: active document has no zoom property set");
+    }
+    // ZoomValue is a `short` (offapi com.sun.star.view.ViewSettings); no
+    // ZoomType change (stays whatever the user last picked, e.g. "page width").
+    propSet.setPropertyValue("ZoomValue", new Module.uno_Any(Module.uno_Type.Short(), percent));
+    return { zoom: percent };
+  }
+
+  var FACTORY_URL = { writer: "private:factory/swriter", calc: "private:factory/scalc", impress: "private:factory/simpress" };
+
+  // Task 1567 goal 3 (theming), 2026-09-27 -- KNOWN GAP, documented not
+  // hidden. Writes org.openoffice.Office.Common/Appearance/ApplicationAppearance
+  // (0=auto,1=light,2=dark) and .../Misc/SymbolStyle (icon theme). The WRITE
+  // is real and verified (read back correctly via a fresh
+  // ConfigurationAccess immediately after commitChanges()) -- confirmed
+  // 2026-09-27 via evidence/probe-theme.js. What is NOT proven, after 3 real
+  // attempts, each a genuinely different angle: (1) setting it after a
+  // document is already open and screenshotting -- no visible change; (2)
+  // opening a BRAND NEW document/window after the write -- still the old
+  // theme; (3) setting it as early as JS can possibly run (immediately on
+  // Module.uno_init resolving, before any document is opened) -- still no
+  // effect on the Start Center or any window opened afterward. Working
+  // theory: color scheme / icon theme resolution happens once, very early in
+  // Desktop::Main() startup, well before UNO scripting is wired up at all,
+  // and is cached for the process lifetime with no UNO-reachable broadcast to
+  // invalidate it. This function is still provided (the write half is
+  // correct and will matter once a live-repaint path is found, or if a
+  // future build pre-seeds the config file before boot) -- but calling it on
+  // a running document must NOT be presented to a user as "theme switched".
+  function doSetTheme(theme) {
+    var css = Module.uno.com.sun.star;
+    var ctx = Module.getUnoComponentContext();
+    function getSingleton(name) {
+      var any = ctx.getValueByName("/singletons/" + name);
+      return any.get();
+    }
+    function setConfig(path, propName, value, unoType) {
+      var cp = css.lang.XMultiServiceFactory.query(getSingleton("com.sun.star.configuration.theDefaultProvider"));
+      var pv = mkPV("nodepath", Module.uno_Type.String(), path);
+      var pvAny = new Module.uno_Any(Module.uno_Type.Struct("com.sun.star.beans.PropertyValue"), pv);
+      var argSeq = new Module.uno_Sequence_any([pvAny]);
+      var access = cp.createInstanceWithArguments("com.sun.star.configuration.ConfigurationUpdateAccess", argSeq);
+      argSeq.delete();
+      var ps = css.beans.XPropertySet.query(access);
+      ps.setPropertyValue(propName, new Module.uno_Any(unoType, value));
+      css.util.XChangesBatch.query(access).commitChanges();
+    }
+    var appearance = theme === "dark" ? 2 : theme === "light" ? 1 : 0;
+    var symbolStyle = theme === "dark" ? "colibre_dark_svg" : "colibre_svg";
+    setConfig("/org.openoffice.Office.Common/Appearance", "ApplicationAppearance", appearance, Module.uno_Type.Short());
+    setConfig("/org.openoffice.Office.Common/Misc", "SymbolStyle", symbolStyle, Module.uno_Type.String());
+    return { theme: theme, appliedLive: false }; // see the function comment: write succeeds, repaint does not happen
+  }
+
+  function doNewDocument(kind, templateBytesU8) {
+    var css = Module.uno.com.sun.star;
+    var ctx = Module.getUnoComponentContext();
+    var desktop = css.frame.Desktop.create(ctx);
+    var factoryUrl = FACTORY_URL[kind];
+    if (!factoryUrl) {
+      throw new Error("bbOffice.newDocument: unknown kind " + kind);
+    }
+    var pvs = [];
+    var loadUrl = factoryUrl;
+    var seqToDelete = null;
+    if (templateBytesU8 && templateBytesU8.length) {
+      var seq = new Module.uno_Sequence_byte(toSignedByteArray(templateBytesU8));
+      var inputStream = css.io.SequenceInputStream.createStreamFromSequence(ctx, seq);
+      seq.delete();
+      pvs.push(mkPV("InputStream", Module.uno_Type.Interface("com.sun.star.io.XInputStream"), inputStream));
+      pvs.push(mkPV("AsTemplate", Module.uno_Type.Boolean(), true));
+      loadUrl = "private:stream";
+    }
+    var args = new Module.uno_Sequence_com$sun$star$beans$PropertyValue(pvs);
+    var model;
+    try {
+      model = css.frame.XComponentLoader.query(desktop).loadComponentFromURL(loadUrl, "_blank", 0, args);
+    } finally {
+      args.delete();
+    }
+    if (!model) {
+      throw new Error("bbOffice.newDocument: loadComponentFromURL returned null for " + kind);
+    }
+    if (state.model) {
+      try {
+        css.util.XCloseable.query(state.model).close(false);
+      } catch (e) {
+        /* best-effort */
+      }
+    }
+    state.model = model;
+    state.saveExt = kind === "writer" ? "docx" : kind === "calc" ? "xlsx" : "pptx";
+    state.openFilename = null;
+    applyDocumentChrome(model);
+    return { docKind: kind };
+  }
+
+  // Test-only diagnostic (task 1567 goal 5's chrome-hiding proof): a durable,
+  // numeric assertion surface so the Playwright suite does not rely on
+  // screenshots alone (screenshots rot; a boolean does not). Not part of the
+  // product API surface (no JSDoc entry in bb-office-api.js), same pattern as
+  // __testShellExecute above.
+  function doDebugChromeState() {
+    var css = Module.uno.com.sun.star;
+    var model = getActiveModel();
+    if (!model) return { hasModel: false };
+    var controller = getController(model);
+    var frame = controller.getFrame();
+    var ps = css.beans.XPropertySet.query(frame);
+    var lm = css.frame.XLayoutManager.query(ps.getPropertyValue("LayoutManager").get());
+    return { hasModel: true, layoutManagerVisible: !!lm.isVisible() };
+  }
+
   function reply(port, id, extra) {
     var msg = Object.assign({ id: id }, extra);
     var transfer = msg.bytes instanceof Uint8Array ? [msg.bytes.buffer] : undefined;
@@ -325,6 +892,41 @@
           } else if (msg.op === "testShellExecute") {
             var shellResult = doTestShellExecute(msg.url);
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "testShellExecute", result: shellResult });
+          } else if (msg.op === "dispatch") {
+            var dispatchResult = doDispatch(msg.command, msg.args);
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "dispatch", result: dispatchResult });
+          } else if (msg.op === "addStatusListener") {
+            var statusListenerResult = doAddStatusListener(Module.uno_mainPort, msg.command);
+            reply(Module.uno_mainPort, msg.id, {
+              ok: true,
+              kind: "addStatusListener",
+              listenerId: statusListenerResult.listenerId,
+              initial: statusListenerResult.initial,
+            });
+          } else if (msg.op === "removeStatusListener") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "removeStatusListener", result: doRemoveListener(msg.listenerId) });
+          } else if (msg.op === "addModifiedListener") {
+            var modListenerId = doAddModifiedListener(Module.uno_mainPort);
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "addModifiedListener", listenerId: modListenerId });
+          } else if (msg.op === "removeModifiedListener") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "removeModifiedListener", result: doRemoveListener(msg.listenerId) });
+          } else if (msg.op === "addSelectionListener") {
+            var selListenerId = doAddSelectionListener(Module.uno_mainPort);
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "addSelectionListener", listenerId: selListenerId });
+          } else if (msg.op === "removeSelectionListener") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "removeSelectionListener", result: doRemoveListener(msg.listenerId) });
+          } else if (msg.op === "getOutline") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "getOutline", result: doGetOutline() });
+          } else if (msg.op === "goToHeading") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "goToHeading", result: doGoToHeading(msg.index) });
+          } else if (msg.op === "setZoom") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "setZoom", result: doSetZoom(msg.percent) });
+          } else if (msg.op === "newDocument") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "newDocument", result: doNewDocument(msg.docKind, msg.templateBytes) });
+          } else if (msg.op === "setTheme") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "setTheme", result: doSetTheme(msg.theme) });
+          } else if (msg.op === "__debugChromeState") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "__debugChromeState", result: doDebugChromeState() });
           } else {
             reply(Module.uno_mainPort, msg.id, { ok: false, error: "unknown op: " + msg.op });
           }

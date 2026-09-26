@@ -15,26 +15,42 @@ allotropia's ZetaOffice binaries or CDN at runtime; their build scripts and upst
 own `static/README.wasm.md` are read as reference only (`docs/PHASE1-FEASIBILITY.md`
 cites both).
 
-## Status: Phase 3 (task 1567) — interactive editor + open/save byte API proven
+## Status: Phase 4 (task 1567) — chrome hidden, UNO dispatch/state API, engine ready for our own chrome
 
-Not shippable yet (licensing decision below still open; no beebeeb-core wiring; the
-build's `--post-js` line documented in `evidence/serve/patch-soffice-js.js` is not yet
-baked into a fresh artifact). But the core technical question is answered:
+Not shippable yet (licensing decision below still open; no beebeeb-core wiring; two
+open engine gaps below). Core technical questions keep getting answered:
 
 - **Phase 1** (`docs/PHASE1-FEASIBILITY.md`): can LO-core build to WASM at all? Partial
   go on macOS (`configure` yes, `make` no — 3 macOS-host-specific bugs).
 - **Phase 2** (`docs/PHASE2-RESULTS.md`): the full interactive Qt/GUI build succeeds on
   a Linux host (the Legion), real keyboard/mouse editing proven in Writer/Calc/Impress,
   egress gate green. Open item: getting external bytes in/out (`file://` didn't work).
-- **Phase 3** (this status, `docs/EGRESS.md`'s 2026-09-27 section): the file-I/O open
-  item is closed — UNO's own `SequenceInputStream`/`SequenceOutputStream` API moves
-  bytes in/out entirely in-memory, no `file://`, no MEMFS. A minimal page API
-  (`bridge/bb-office-api.js` → `bbOffice.open(bytes, filename)` / `bbOffice.save()`)
-  is built and proven end-to-end for `.docx`/`.xlsx`/`.pptx` (real Playwright keyboard
-  typing, independent python-docx/openpyxl/python-pptx verification) and read-then-
-  save-as-modern for legacy `.doc`/`.xls`/`.ppt`. Image insert from bytes and the
-  hyperlink-safety mechanism are both proven with 0 egress; `crates/office-bridge` now
-  has a real (not sketch) `DocumentHandle::open`/`.save()` shape with unit tests.
+- **Phase 3** (`docs/EGRESS.md`'s 2026-09-27 section): the file-I/O open item is closed
+  — UNO's own `SequenceInputStream`/`SequenceOutputStream` API moves bytes in/out
+  entirely in-memory, no `file://`, no MEMFS. A minimal page API (`bridge/bb-office-api.js`
+  → `bbOffice.open(bytes, filename)` / `bbOffice.save()`) is built and proven end-to-end
+  for `.docx`/`.xlsx`/`.pptx`. `crates/office-bridge` has a real `DocumentHandle::open`/
+  `.save()` shape with unit tests.
+- **Phase 4** (this status, task file's 2026-09-27 phase-4 note): the `--post-js`
+  `Module.uno_scripts` fix is now BAKED INTO THE BUILD (`static/emscripten/bb-uno-scripts-
+  default.js` + `desktop/Executable_soffice_bin.mk`) — `evidence/serve/patch-soffice-js.js`'s
+  runtime text-patch is no longer needed and was removed from the serving pipeline
+  (confirmed: `window.bbOffice.open/save` works against the raw, unpatched artifact).
+  `applyDocumentChrome()` (in `bb-office-worker.js`) hides the menubar/toolbars/statusbar/
+  sidebar/rulers and closes the Start Center on every document open — screenshots and a
+  durable `layoutManagerVisible` assertion in `evidence/playwright/phase4-chrome.spec.js`.
+  The bridge API gained `dispatch`/`onState`/`getOutline`/`goToHeading`/`setZoom`/
+  `newDocument`/`onModifiedChange`/`onSelectionChange` — see `bridge/bb-office-api.js`'s
+  JSDoc for exact signatures, all proven against the real artifact in
+  `evidence/playwright/phase4-bridge-api.spec.js`.
+  **Two open engine gaps, each with 3 real documented attempts:** (1) the native Qt
+  window title bar cannot be hidden without breaking document-switching entirely — see
+  `patches/0005-emscripten-frameless-window-REVERTED.patch`; (2) `bbOffice.setTheme()`'s
+  config write succeeds and persists but does not cause a live repaint in this build —
+  see `doSetTheme`'s comment in `bb-office-worker.js`. Also open: no screen-rect for
+  selection changes (no accessibility bridge in this build — see `onSelectionChange`'s
+  doc comment), and Inter-as-UI-font / icon-theme dark variant are not yet bundled into
+  `soffice.data` (would need a build-time VFS package change, not attempted this phase).
 
 See the task file (`.claude/tasks/*/1567-*.md` in the workspace root repo) for the full
 dated history and numbers.

@@ -23,6 +23,11 @@
 
   var pending = new Map();
   var nextId = 1;
+  // listenerId -> callback, for unsolicited events (phase 4). Keyed the same
+  // way regardless of event kind (statusChanged/modified/selectionChanged) --
+  // each op's own onState/onModifiedChange/onSelectionChange wrapper is what
+  // keeps the payload shape kind-specific for the caller.
+  var eventSubscribers = new Map();
 
   // `Module` itself does not exist until qtloader.js's own bootstrap runs
   // (triggered by <body onload="init()">), which happens strictly after this
@@ -54,7 +59,15 @@
       }).then(function (port) {
         port.onmessage = function (ev) {
           var msg = ev.data;
-          if (!msg || msg.id == null) return; // e.g. the worker's own startup {ready:true}
+          if (!msg) return;
+          if (msg.event) {
+            // Unsolicited event (phase 4: statusChanged/modified/selectionChanged)
+            // -- not a reply to any pending call. Dispatch by listenerId.
+            var cb = eventSubscribers.get(msg.listenerId);
+            if (cb) cb(msg);
+            return;
+          }
+          if (msg.id == null) return; // e.g. the worker's own startup {ready:true}
           var resolver = pending.get(msg.id);
           if (!resolver) return;
           pending.delete(msg.id);
@@ -129,6 +142,155 @@
      */
     __testShellExecute: function (url) {
       return call("testShellExecute", { url: url }).then(function (msg) {
+        return msg.result;
+      });
+    },
+    /** Test-only diagnostic; not part of the product API surface. */
+    __debugChromeState: function () {
+      return call("__debugChromeState", {}).then(function (msg) {
+        return msg.result;
+      });
+    },
+
+    // -----------------------------------------------------------------
+    // Phase 4 (task 1567 goal 4): UNO dispatch + status listeners, outline,
+    // zoom, newDocument, change events. See bb-office-worker.js's header for
+    // the wire protocol and the one known gap (no selection screen rect).
+    // -----------------------------------------------------------------
+
+    /**
+     * Dispatch a .uno: command against the active document, e.g.
+     * `bbOffice.dispatch(".uno:Bold")`.
+     * @param {string} command a ".uno:" command URL
+     * @param {Array<{name: string, value: (string|number|boolean)}>} [args]
+     * @returns {Promise<{dispatched: boolean}>}
+     */
+    dispatch: function (command, args) {
+      return call("dispatch", { command: command, args: args }).then(function (msg) {
+        return msg.result;
+      });
+    },
+
+    /**
+     * Subscribe to a .uno: command's toggled/enabled state (bold, italic,
+     * paragraph style, undo/redo-enabled, zoom, ... -- any command LO itself
+     * exposes a FeatureStateEvent for). The callback fires once immediately
+     * with the current state (UNO's own addStatusListener guarantee), then
+     * again on every change.
+     * @param {string} command
+     * @param {function({isEnabled: boolean, state: *}): void} cb
+     * @returns {Promise<function(): void>} resolves to an unsubscribe function
+     */
+    onState: function (command, cb) {
+      return call("addStatusListener", { command: command }).then(function (msg) {
+        var listenerId = msg.listenerId;
+        eventSubscribers.set(listenerId, function (evt) {
+          cb({ isEnabled: evt.isEnabled, state: evt.state });
+        });
+        // Delivered as part of THIS reply, not a separate event -- see
+        // bb-office-worker.js's doAddStatusListener comment for why a plain
+        // event would race this function's own subscriber registration.
+        if (msg.initial) cb({ isEnabled: msg.initial.isEnabled, state: msg.initial.state });
+        var unsubscribed = false;
+        return function unsubscribe() {
+          if (unsubscribed) return;
+          unsubscribed = true;
+          eventSubscribers.delete(listenerId);
+          call("removeStatusListener", { listenerId: listenerId }); // best-effort; caller does not need to await this
+        };
+      });
+    },
+
+    /** Subscribe to the active document's modified (dirty) state. */
+    onModifiedChange: function (cb) {
+      return call("addModifiedListener", {}).then(function (msg) {
+        var listenerId = msg.listenerId;
+        eventSubscribers.set(listenerId, function (evt) {
+          cb(evt.modified);
+        });
+        var unsubscribed = false;
+        return function unsubscribe() {
+          if (unsubscribed) return;
+          unsubscribed = true;
+          eventSubscribers.delete(listenerId);
+          call("removeModifiedListener", { listenerId: listenerId });
+        };
+      });
+    },
+
+    /**
+     * Subscribe to selection changes. NOTE: carries the selected text only --
+     * no screen rect is available (see bb-office-worker.js's "KNOWN GAP").
+     */
+    onSelectionChange: function (cb) {
+      return call("addSelectionListener", {}).then(function (msg) {
+        var listenerId = msg.listenerId;
+        eventSubscribers.set(listenerId, function (evt) {
+          cb({ text: evt.text });
+        });
+        var unsubscribed = false;
+        return function unsubscribe() {
+          if (unsubscribed) return;
+          unsubscribed = true;
+          eventSubscribers.delete(listenerId);
+          call("removeSelectionListener", { listenerId: listenerId });
+        };
+      });
+    },
+
+    /**
+     * @returns {Promise<Array<{level: number, text: string}>>} Writer headings
+     * in document order; empty array for a non-Writer active document.
+     */
+    getOutline: function () {
+      return call("getOutline", {}).then(function (msg) {
+        return msg.result;
+      });
+    },
+
+    /** Moves the view cursor to the i-th heading returned by getOutline(). */
+    goToHeading: function (index) {
+      return call("goToHeading", { index: index }).then(function (msg) {
+        return msg.result;
+      });
+    },
+
+    /** @param {number} percent e.g. 150 for 150% */
+    setZoom: function (percent) {
+      return call("setZoom", { percent: percent }).then(function (msg) {
+        return msg.result;
+      });
+    },
+
+    /**
+     * Opens a brand-new document, closing whatever is currently open.
+     * @param {"writer"|"calc"|"impress"} docKind
+     * @param {Uint8Array} [templateBytes] optional template to base it on
+     *   (opened with AsTemplate so saving never overwrites the template file)
+     */
+    /**
+     * KNOWN GAP (see bb-office-worker.js's doSetTheme comment): the
+     * config write is real and persists, but does NOT cause a live repaint
+     * in this build -- resolves to { theme, appliedLive: false } always.
+     * Do not present this as "theme switched" to a user; treat it as
+     * forward-compatible plumbing until the repaint gap is closed.
+     * @param {"light"|"dark"|"auto"} theme
+     */
+    setTheme: function (theme) {
+      return call("setTheme", { theme: theme }).then(function (msg) {
+        return msg.result;
+      });
+    },
+
+    newDocument: function (docKind, templateBytes) {
+      var extra = { docKind: docKind };
+      var transfer = [];
+      if (templateBytes) {
+        var u8 = templateBytes instanceof Uint8Array ? templateBytes : new Uint8Array(templateBytes);
+        extra.templateBytes = u8;
+        transfer.push(u8.buffer);
+      }
+      return call("newDocument", extra, transfer).then(function (msg) {
         return msg.result;
       });
     },
