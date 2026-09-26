@@ -15,22 +15,29 @@ allotropia's ZetaOffice binaries or CDN at runtime; their build scripts and upst
 own `static/README.wasm.md` are read as reference only (`docs/PHASE1-FEASIBILITY.md`
 cites both).
 
-## Status: Phase 1 feasibility spike (task 1567) — DONE, PARTIAL GO
+## Status: Phase 3 (task 1567) — interactive editor + open/save byte API proven
 
-Not shippable. This phase answered one question: **can we build LibreOffice-core-to-WASM
-from source, on this Mac, in a reasonable amount of time and disk?**
+Not shippable yet (licensing decision below still open; no beebeeb-core wiring; the
+build's `--post-js` line documented in `evidence/serve/patch-soffice-js.js` is not yet
+baked into a fresh artifact). But the core technical question is answered:
 
-**Result:** `configure` succeeds (8 generic macOS toolchain gaps found and fixed, none
-WASM-specific). `make` does not complete on this Mac — after fixing one real,
-host-independent LO bug (`uui` module unconditionally required curl), it hit two more
-in a row, each in a different subsystem, each a genuine macOS-build-host artifact
-(gbuild's for_build library naming, then OpenSSL's own `Configure` cross-compile
-detection). Stopped by decision at that pattern, not by a single unresolvable blocker.
-Disk and time were never the constraint (7GB, ~50 minutes, budget was 80GB).
+- **Phase 1** (`docs/PHASE1-FEASIBILITY.md`): can LO-core build to WASM at all? Partial
+  go on macOS (`configure` yes, `make` no — 3 macOS-host-specific bugs).
+- **Phase 2** (`docs/PHASE2-RESULTS.md`): the full interactive Qt/GUI build succeeds on
+  a Linux host (the Legion), real keyboard/mouse editing proven in Writer/Calc/Impress,
+  egress gate green. Open item: getting external bytes in/out (`file://` didn't work).
+- **Phase 3** (this status, `docs/EGRESS.md`'s 2026-09-27 section): the file-I/O open
+  item is closed — UNO's own `SequenceInputStream`/`SequenceOutputStream` API moves
+  bytes in/out entirely in-memory, no `file://`, no MEMFS. A minimal page API
+  (`bridge/bb-office-api.js` → `bbOffice.open(bytes, filename)` / `bbOffice.save()`)
+  is built and proven end-to-end for `.docx`/`.xlsx`/`.pptx` (real Playwright keyboard
+  typing, independent python-docx/openpyxl/python-pptx verification) and read-then-
+  save-as-modern for legacy `.doc`/`.xls`/`.ppt`. Image insert from bytes and the
+  hyperlink-safety mechanism are both proven with 0 egress; `crates/office-bridge` now
+  has a real (not sketch) `DocumentHandle::open`/`.save()` shape with unit tests.
 
-See [`docs/PHASE1-FEASIBILITY.md`](docs/PHASE1-FEASIBILITY.md) for the full go/no-go
-with numbers, and [`build/PROGRESS.md`](build/PROGRESS.md) for the attempt-by-attempt
-log (12 attempts, each with root cause and evidence, not guesses).
+See the task file (`.claude/tasks/*/1567-*.md` in the workspace root repo) for the full
+dated history and numbers.
 
 ## Layout
 
@@ -51,8 +58,20 @@ patches/
                      `build/wasm.sh clone` — the real, tracked fork content (build/core/
                      itself is gitignored, so patches/ is where our changes live in git)
 crates/
-  office-bridge/   — Rust glue crate SKETCH (not built/wired yet) — see its lib.rs doc
-                     comment for the exact byte-handling contract with beebeeb-core
+  office-bridge/   — Rust glue crate: `DocumentHandle::open`/`.save()` wraps
+                     `window.bbOffice.*` (wasm-bindgen + wasm-bindgen-futures); pure
+                     logic (`DocumentFormat`, `fits_memory_budget`) is unit-tested
+                     natively — see its lib.rs doc comment for the byte-handling
+                     contract with beebeeb-core. Not wired into the web workspace build
+                     yet.
+bridge/
+  bb-office-worker.js  — runs INSIDE the pthread that owns UNO (loaded via LO's own
+                         "LOWA channel" `Module.uno_scripts` mechanism); does the
+                         actual open/save/insertImage/insertHyperlink UNO calls
+  bb-office-api.js     — page-side `window.bbOffice.open/save/...` API, talks to the
+                         worker over `Module.uno_main`'s MessagePort
+                         (see bb-office-worker.js's header comment for the full
+                         mechanism and why file://+MEMFS does not work here)
 ```
 
 ## Licensing (open item, not decided in this phase)

@@ -104,6 +104,112 @@ Confirmed working: the headless `autogen.input` in `build/core/autogen.input` pa
 - **1 (GIO UCB provider) is expected-absent but not yet build-confirmed** — pending a completed build (see `build/PROGRESS.md`).
 - **1 (hyperlink → external navigation) has no native-code disable at all** — it is out of scope for `configure.ac` flags entirely and must be handled at the JS/Rust host-page glue layer plus its own dedicated egress-test assertion, since CSP `connect-src` does not cover top-level navigation. This is the single most important finding of this audit: **the CSP mitigation described in task 1566's decision is necessary but not sufficient** — it does not by itself stop a hyperlink click from navigating the top-level page to an external URL.
 
+## 2026-09-27 — Phase 3: the file-I/O open item closed, image + hyperlink egress steps done
+
+**Root cause of Phase 2's open item, confirmed empirically (not theorized):**
+`Module.FS`/plain JS `FS.writeFile()`/`readFile()` and LibreOffice's own C++ file
+I/O (`com.sun.star.ucb.SimpleFileAccess`, `loadComponentFromURL("file://...")`,
+`storeToURL("file://...")`) operate on **two different, non-overlapping
+Emscripten MEMFS instances**, even when both are invoked from the exact same
+JS `evaluate()` call in the exact same Worker. Proven with a from-scratch
+`/tmp/bbnew12345/` directory (so no stale-cache theory survives): a plain
+`FS.mkdir`+`FS.writeFile` there is invisible to `SimpleFileAccess.exists()`
+in the same call, AND — the reverse — a real UCB `openFileWrite()` write is
+invisible to `FS.stat()` immediately after, in the same call. LibreOffice's
+own UCB dispatches real file-provider I/O to its internal thread pool
+(the "thread-pool" named Workers visible in the console log), and each of
+those OS-thread Workers has its own independent MEMFS — there is no
+source patch that closes this for `file://` URLs; it is a structural property
+of MEMFS + real OS threads under Emscripten.
+
+**The mechanism that works — and needs no patch or rebuild:** UNO's own
+in-memory stream API. `com.sun.star.io.SequenceInputStream.createStreamFromSequence()`
+wraps a raw byte sequence as `XInputStream`; `com.sun.star.io.SequenceOutputStream`
+is an `XOutputStream` that hands written bytes back via
+`XSequenceOutputStream.getWrittenBytes()`. Passed via the MediaDescriptor's
+`InputStream`/`OutputStream` properties with a placeholder `"private:stream"`
+URL (plus an explicit `FilterName` — required for `OutputStream`, and
+recommended for `InputStream` since it skips a possibly-flaky content-type
+sniff), `loadComponentFromURL`/`storeToURL` never touch UCB's file provider or
+any background thread — same principle as the already-working
+`private:factory/*` in-memory documents. Full round trip proven, docx/xlsx/pptx,
+real Playwright keyboard events, independent `python-docx`/`openpyxl`/
+`python-pptx` verification: see the task file's dated 2026-09-27 note.
+
+**Getting this callable from real page JS (not just Playwright/CDP) — the
+"LOWA channel":** LibreOffice's own `desktop/source/app/initjsunoscripting.cxx`
+already ships a page&lt;-&gt;pthread `MessageChannel` for exactly this (`Module.uno_main`
+resolves on the page with a live `MessagePort`; `Module.uno_mainPort` is its
+other end, inside the pthread that runs UNO). No patch needed to use it — but
+it only activates a script the page names via `Module["uno_scripts"]`, and
+that property must be visible to the **pthread's own** `Module` object at
+pthread-spawn time (Emscripten's generated bootstrap only forwards a small
+fixed key set — `onExit`/`onAbort`/`print`/`printErr`/`wasmMemory`/`wasmModule`/`workerID`
+— to each new Worker; setting it on the page alone is silently ignored inside
+the pthread). The reproducible fix is one `--post-js` line at LO-WASM link
+time (documented in `evidence/serve/patch-soffice-js.js`'s header, not yet
+applied to a fresh Legion rebuild this phase — reproduced against the
+already-built Phase 2 artifact instead, so this phase's evidence does not
+depend on another build cycle).
+
+**Image insert from bytes (goal 4):** `com.sun.star.graphic.GraphicProvider.queryGraphic()`
+decodes a `SequenceInputStream`-wrapped PNG into an `XGraphic` entirely
+in-memory (no `file://`, no fetch); a `com.sun.star.text.TextGraphicObject`
+— created via the **document's own** `XMultiServiceFactory` (the process-global
+component context's service manager returns null for this service; only the
+document-scoped factory works, confirmed empirically) — carries it into the
+text. Verified: the saved `.docx`'s `word/_rels/document.xml.rels` contains a
+real `Type=".../image"` relationship pointing at `media/image1.png` (an
+embedded image, never a URL).
+
+**Hyperlink click (goal 4) — mechanism proven, pixel-click gap documented
+honestly, not silently dropped:** a real hyperlink was inserted (UNO
+`HyperLinkURL` character property; the saved docx's XML confirms a genuine
+`<w:hyperlink>` element). **Three real attempts** to trigger LO's own
+click-to-follow UI detection with a literal Playwright mouse click — plain
+click, Ctrl+click swept across several y-offsets, and a right-click context
+menu (which showed no hyperlink-specific entries at all) — did not fire it;
+the text cursor visibly lands on the correct run (screenshotted) but no
+follow action results. Per this task's own stop-after-3-attempts rule, this
+specific UI-automation calibration question is left open rather than looped
+on further. **What IS proven, directly and unambiguously:** invoking
+`com.sun.star.system.SystemShellExecute.execute()` — the one and only UNO
+service any hyperlink-follow code path in this build can reach a URL through
+(confirmed by reading `shell/source/unix/exec/shellexec.cxx`'s
+`__EMSCRIPTEN__` branch, row #10 above) — dispatches the patched
+`beebeeb:hyperlink` DOM `CustomEvent` correctly, with **0 outside requests, 0
+popups**, exercised inside the SAME sandboxed-iframe egress session as the
+image insert and the full 11-menu click-through
+(`evidence/playwright/egress.spec.js`, "zero egress including image insert
+and hyperlink click", green; red-proof of the base egress session re-run and
+still green after this phase's changes).
+
+**Timings / memory (Chromium, this Mac, localhost dev server — not
+production hosting, and OS file cache was hot from repeated same-session
+testing; treat as a floor, not a guarantee against a cold real-world CDN
+fetch):**
+
+| | cold profile | warm profile (2nd launch, same dir) |
+|---|---|---|
+| nav → `load` event | 56ms | 53ms |
+| `load` → `Module.uno_init` resolves | 3.3s | 2.9s |
+| total to interactive (+2s paint settle) | 5.4s | 5.0s |
+| peak JS heap (`Performance.getMetrics`, 5 samples) | 24.4MB | 22.5MB |
+| Chromium process-tree RSS at settle | 1.45GB | 1.49GB |
+
+Not stress-tested against a large (tens-of-MB) document this phase — all
+fixtures used were under 1MB; `office-bridge::fits_memory_budget`'s 100MB
+placeholder is explicitly flagged as unmeasured in its own doc comment.
+
+**Bundle size, brotli `-q 11`:**
+
+| file | original | brotli `-q 11` | reduction |
+|---|---|---|---|
+| `soffice.wasm` | 171,729,371 B | 38,602,455 B | 77.6% |
+| `soffice.data` | 96,316,943 B | 15,757,226 B | 83.7% |
+| `soffice.js` | 840,288 B | 127,453 B | 84.9% |
+| **total** | **268,886,602 B (256MB)** | **54,487,134 B (52MB)** | **79.7%** |
+
 ## What remains (not yet built, per task 1567 goal 3)
 
 The automated Playwright egress test itself (goal 3's proposal) is **not built in this phase** — phase 1 is source-level audit + build feasibility only. Proposed shape for phase 2:

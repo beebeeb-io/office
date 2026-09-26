@@ -14,6 +14,10 @@ const http = require("http");
 
 const artifactDir = process.argv[2] || path.join(__dirname, "artifact");
 const port = Number(process.argv[3] || 8743);
+// The bbOffice bridge's canonical source lives at the repo root (`bridge/`),
+// not under evidence/ -- served directly from there so the harness never
+// drifts from a copy. See bridge/bb-office-worker.js's own header comment.
+const bridgeDir = path.join(__dirname, "..", "..", "bridge");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -36,9 +40,14 @@ function send(res, status, body, headers) {
 const server = http.createServer((req, res) => {
   const urlPath = decodeURIComponent(req.url.split("?")[0]);
   // host.html (and other harness-only pages) live alongside this server script, not
-  // in the artifact directory -- serve those from here first.
+  // in the artifact directory -- serve those from here first. /bridge/* is the
+  // canonical bbOffice bridge source at the repo root (bridge/), served
+  // directly so this harness can never drift from a stale copy.
   const harnessPath = path.join(__dirname, urlPath);
-  const filePath = fs.existsSync(harnessPath) && fs.statSync(harnessPath).isFile()
+  const bridgePath = urlPath.startsWith("/bridge/") ? path.join(bridgeDir, urlPath.slice("/bridge/".length)) : null;
+  const filePath = bridgePath && fs.existsSync(bridgePath) && fs.statSync(bridgePath).isFile()
+    ? bridgePath
+    : fs.existsSync(harnessPath) && fs.statSync(harnessPath).isFile()
     ? harnessPath
     : path.join(artifactDir, urlPath === "/" ? "/index.html" : urlPath);
 
@@ -62,7 +71,7 @@ const server = http.createServer((req, res) => {
       "default-src 'self'; connect-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;";
   }
 
-  if (!filePath.startsWith(artifactDir) && !filePath.startsWith(path.join(__dirname))) {
+  if (!filePath.startsWith(artifactDir) && !filePath.startsWith(path.join(__dirname)) && !filePath.startsWith(bridgeDir)) {
     return send(res, 403, "forbidden", headers);
   }
 
