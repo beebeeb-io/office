@@ -1,0 +1,28 @@
+diff --git a/vcl/Library_vcl.mk b/vcl/Library_vcl.mk
+index 0b47d5879..6fd296ec9 100644
+--- a/vcl/Library_vcl.mk
++++ b/vcl/Library_vcl.mk
+@@ -89,6 +89,23 @@ $(if $(filter WNT-TRUE,$(OS)-$(USE_HEADLESS_CODE)), \
+ 	)) \
+ )
+ 
++# Beebeeb office fork (task 1567): on Emscripten, cairo is always a BUNDLED STATIC
++# external (external/cairo/Library_cairo.mk lists freetype as ITS OWN external use,
++# for compiling cairo itself -- that does not propagate to every later static link
++# that pulls in libcairo-lo.a). wasm-ld's link is a single static link of the whole
++# soffice.js executable with no shared libcairo.so to hide this dependency the way a
++# native Linux desktop build (SYSTEM_CAIRO, a real .so already linked against system
++# freetype) does. Real, reproducible link failure fixed here:
++#   wasm-ld: error: .../libcairo-lo.a(cairo-ft-font.c.o): undefined symbol: FT_New_Face
++# (and ~20 more FT_* symbols) at the Executable/soffice.js link step. The existing
++# WNT-TRUE block above is the same fix for the same underlying gap on Windows; this is
++# its Emscripten-target equivalent, not a Windows-specific workaround.
++$(if $(filter EMSCRIPTEN,$(OS)), \
++	$(eval $(call gb_Library_use_static_libraries,vcl,\
++        freetype \
++	)) \
++)
++
+ $(eval $(call gb_Library_use_externals,vcl,\
+     boost_headers \
+     expat \
