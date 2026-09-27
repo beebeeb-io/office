@@ -1,0 +1,39 @@
+diff --git a/sfx2/source/dialog/AdditionsDialogHelper.cxx b/sfx2/source/dialog/AdditionsDialogHelper.cxx
+index ec75b4419..708413ae1 100644
+--- a/sfx2/source/dialog/AdditionsDialogHelper.cxx
++++ b/sfx2/source/dialog/AdditionsDialogHelper.cxx
+@@ -7,15 +7,29 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+  */
+ 
++#include <sal/config.h>
++
+ #include <sfx2/AdditionsDialogHelper.hxx>
+ #include <vcl/abstdlg.hxx>
++#include <vcl/vclenum.hxx>
++#include <vcl/svapp.hxx>
++#include <vcl/weld/MessageDialog.hxx>
+ 
+-void AdditionsDialogHelper::RunAdditionsDialog(weld::Window* pParent, const OUString& rAdditionsTag)
++// Beebeeb office fork (task 1567): egress findings #3/#4 (docs/EGRESS.md). Upstream's
++// body here constructed an AbstractAdditionsDialog (cui/source/dialogs/AdditionsDialog.cxx)
++// which unconditionally builds and (via its search thread) fetches
++// https://extensions.libreoffice.org/api/v0/<tag>.json the moment it is shown -- reachable
++// from six call sites (color/icon/theme/dictionary "Get more online" buttons) once a real
++// GUI exists to click them from. --disable-curl removes the HTTP transport underneath it,
++// but "fails once it tries" is a weaker guarantee than "never tries" -- this fork disables
++// the feature at this single shared call-site chokepoint (every call site above goes
++// through this one function) instead of relying on curl's absence one layer down.
++void AdditionsDialogHelper::RunAdditionsDialog(weld::Window* pParent, const OUString& /*rAdditionsTag*/)
+ {
+-    VclAbstractDialogFactory* pFact = VclAbstractDialogFactory::Create();
+-    VclPtr<AbstractAdditionsDialog> pDialog = pFact->CreateAdditionsDialog(pParent, rAdditionsTag);
+-    pDialog->StartExecuteAsync(
+-        [pDialog](sal_Int32 /*nResult*/) -> void { pDialog->disposeOnce(); });
++    std::unique_ptr<weld::MessageDialog> xBox(Application::CreateMessageDialog(
++        pParent, VclMessageType::Info, VclButtonsType::Ok,
++        u"This build never contacts a network to fetch additional templates, icons, dictionaries, or themes. Nothing was requested."_ustr));
++    xBox->run();
+ }
+ 
+ /* vim:set shiftwidth=4 softtabstop=4 expandtab cinoptions=b1,g0,N-s cinkeys+=0=break: */

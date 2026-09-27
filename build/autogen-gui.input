@@ -1,0 +1,13 @@
+--disable-debug
+--enable-sal-log
+--disable-crashdump
+--with-distro=LibreOfficeWASM32
+--with-wasm-module=writer calc impress
+--disable-online-update
+--without-help
+--disable-extension-update
+--disable-breakpad
+--disable-curl
+--without-webdav
+--disable-libcmis
+QT5DIR=build/qt5-install

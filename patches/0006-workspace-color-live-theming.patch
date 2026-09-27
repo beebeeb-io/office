@@ -1,0 +1,63 @@
+diff --git a/desktop/source/app/initjsunoscripting.cxx b/desktop/source/app/initjsunoscripting.cxx
+index ec11e725e..1af6218fc 100644
+--- a/desktop/source/app/initjsunoscripting.cxx
++++ b/desktop/source/app/initjsunoscripting.cxx
+@@ -26,6 +26,58 @@
+ #include <config_emscripten.h>
+ #include <rtl/uri.hxx>
+ #include <rtl/ustring.hxx>
++#include <tools/color.hxx>
++#include <vcl/settings.hxx>
++#include <vcl/svapp.hxx>
++
++// Beebeeb office fork (task 1567, item 1 -- 2026-09-27): the document's
++// SURROUNDING canvas (the area LO itself paints outside the page/grid/slide,
++// e.g. Writer's margin around the page, Calc's off-grid area) renders as
++// upstream's neutral grey default in BOTH our light and dark app themes --
++// confirmed empirically (repos/office/evidence/probe-theming-scroll.js,
++// 2026-09-27) that this specific color, svtools::APPBACKGROUND, is the ONE
++// entry in ColorConfig's whole table that does NOT come from the
++// dark/light-indexed cAutoColors[] constant table at all -- it is a live
++// passthrough straight to Application::GetSettings().GetStyleSettings()
++// .GetWorkspaceColor(), re-evaluated on every single GetColor() call (proven
++// by reading svtools/source/config/colorcfg.cxx's own
++// ColorConfig_Impl::GetColorValue(): GetColorConfigValue() returns COL_AUTO
++// whenever the underlying config key is unset -- which task 1567's own
++// earlier probe already proved is EVERY key in this minimized WASM package's
++// entirely-absent org.openoffice.Office.UI config tree -- and GetDefaultColor
++// is called completely fresh each time, with NO caching layer of its own for
++// this one entry). This is why the earlier theming attempts (doSetTheme(),
++// this same task's phase-4 note) never worked for the DOCCOLOR/icon-theme
++// pair (those DO go through the cached cAutoColors/dark-mode-index path,
++// resolved once, early, well before UNO scripting is even wired) -- but it
++// also means workspace color specifically does NOT need that whole boot-time
++// profile-seeding mechanism: a plain VCL Application::SetSettings() call,
++// made any time before the next paint, is picked up live, with no rebuild of
++// the config layer and no window-recreation dance required.
++//
++// bbSetWorkspaceColor() is a minimal, additive native hook exposed the same
++// way this file already exposes uno_scripts/uno_main to JS (EMSCRIPTEN_KEEPALIVE
++// extern "C", not a UNO service -- there is no existing UNO-reachable API for
++// mutating Application::GetSettings() itself, only for reading/writing actual
++// configuration nodes, which per the above is the wrong layer for this one
++// color). Called from bridge/bb-office-worker.js (task 1567's own JS bridge,
++// imported into this exact pthread via the uno_scripts mechanism below) once
++// per document open, with the RGB the web app's current theme + app kind
++// resolves to (design/office-editor.html's own --bg/--canvas-dark tokens --
++// see that call site's own comment for the exact values and the Impress
++// always-dark exception). The page (DOCCOLOR) is deliberately NOT touched
++// here -- it already renders correctly white in both themes today (the
++// cAutoColors table's own dark-mode index never flips in this build), and
++// the lead's own 2026-09-27 02:15 ruling is that it should stay white in both
++// themes anyway, matching Word/Docs' own convention -- so leaving it alone is
++// the correct behavior, not an oversight.
++extern "C" EMSCRIPTEN_KEEPALIVE void bbSetWorkspaceColor(std::uint32_t nRGB) {
++    AllSettings aSettings = Application::GetSettings();
++    StyleSettings aStyle = aSettings.GetStyleSettings();
++    aStyle.SetWorkspaceColor(Color(nRGB & 0xFFFFFF));
++    aSettings.SetStyleSettings(aStyle);
++    Application::SetSettings(aSettings);
++}
+ 
+ namespace {
+ 

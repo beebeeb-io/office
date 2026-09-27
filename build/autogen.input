@@ -1,0 +1,18 @@
+--disable-debug
+--enable-sal-log
+--disable-crashdump
+--host=wasm32-local-emscripten
+--disable-gui
+--disable-scripting
+--with-wasm-module=writer calc impress
+--with-package-format=emscripten
+--disable-online-update
+--without-help
+--disable-extension-update
+--disable-breakpad
+--disable-curl
+--without-webdav
+--disable-libcmis
+--enable-bogus-pkg-config
+--with-build-platform-configure-options=--enable-bogus-pkg-config
+PYTHON=/opt/homebrew/bin/python3

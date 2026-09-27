@@ -1,0 +1,72 @@
+REVERTED — task 1567 phase 4, 2026-09-27. Do NOT re-apply as-is.
+
+Attempted fix for goal 2's "hide the native window title" requirement. Added
+Qt::FramelessWindowHint to the top-level document window's flags on
+__EMSCRIPTEN__, so the synthetic Qt title bar (app icon + "Untitled 1 —
+LibreOfficeDev Writer" + min/max/close, confirmed real and Qt-painted, not an
+OS decoration, via evidence/screenshots/probe-chrome3-tofront.png) would stop
+being drawn.
+
+Built successfully (make -j12, ~5 min incremental) and DID remove the title
+bar (confirmed: evidence/screenshots/phase4-chrome-writer.png before revert
+showed no title bar). But it broke something more important: the mechanism
+this whole product depends on for switching the visible document (a document
+opened via loadComponentFromURL gets its OWN frame — confirmed
+XFramesSupplier.getFrames() goes 1 -> 2 — and does not become visible on the
+single shared #qtcanvas until XTopWindow::toFront() + XWindow::setVisible(true)
+are called on it) stopped working with the frameless flag applied. Proven by
+running the EXACT SAME toFront/setVisible calls (evidence/probe-chrome3.js)
+against the frameless build: frame count still goes 1 -> 2, the calls throw no
+exception, but the Start Center stays the visible frame regardless (screenshot
+unchanged from before the calls). The same calls worked correctly on the
+non-frameless build (both before this patch, and confirmed again after
+reverting it).
+
+Working theory (not confirmed further — reverted before investigating why):
+Qt's Emscripten QPA platform plugin's logic for which top-level QMainWindow
+owns the single OFFSCREENCANVAS surface likely keys off the window's flags/type
+in a way that excludes a frameless window from being treated as a
+compositor-eligible root surface, or from receiving the "raise" it needs.
+
+Decision: reverted (git checkout -- vcl/qt5/QtFrame.cxx on the Legion tree,
+confirmed via `git status --short` showing the file no longer modified) rather
+than ship a version where opening a document silently leaves the Start Center
+on screen — that is a total product break, worse than a visible title bar.
+Rebuilt without this patch; the uno_scripts --post-js fix (0001-0004,
+static/emscripten/bb-uno-scripts-default.js) is untouched and still applied.
+
+The ORIGINAL diff (for whoever picks this up and wants to debug the QPA
+compositing question properly, e.g. by reading
+qtbase/src/plugins/platforms/wasm/ or instrumenting which QWindow the
+canvas paints from):
+
+--- a/vcl/qt5/QtFrame.cxx
++++ b/vcl/qt5/QtFrame.cxx
+@@ -119,7 +119,22 @@ QtFrame::QtFrame(QtFrame* pParent, SalFrameStyleFlags nStyle)
+         else if (nStyle & SalFrameStyleFlags::DIALOG || m_pParent)
+             aWinFlags = Qt::Dialog;
+         else
++#if defined __EMSCRIPTEN__
++            // Beebeeb office fork (task 1567 phase 4): this target has no real OS
++            // window manager at all (a browser canvas, not a desktop) -- Qt's own
++            // QMainWindow paints a SYNTHETIC title bar (app icon + title text +
++            // min/max/close) for a bare Qt::Window on a WM-less platform, which is
++            // exactly the chrome a host page embedding this canvas replaces with its
++            // own (task 1567 goal 2: "only the document area"). This is a Qt window-
++            // flag decision made at frame construction, not a UI element a
++            // LayoutManager/registrymodifications.xcu default can hide -- confirmed
++            // by screenshot (evidence/screenshots/probe-chrome3-tofront.png) that the
++            // title bar survives XLayoutManager::setVisible(false), which correctly
++            // hides the menubar/toolbars/statusbar/sidebar it DOES own.
++            aWinFlags = Qt::Window | Qt::FramelessWindowHint;
++#else
+             aWinFlags = Qt::Window;
++#endif
+     }
+
+Status: task 1567's window-title hiding requirement is OPEN, not resolved.
+The engine still shows a real Qt-painted title bar on every document window.
+Next attempt should investigate the Qt WASM QPA's window-activation/compositing
+code directly rather than guessing at flag combinations, or consider a
+CSS-only mitigation on the host page (crop/mask a fixed-height strip if the
+bar's height is stable) as a product-level workaround instead of an engine fix.

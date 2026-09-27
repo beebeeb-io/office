@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>iframe probe</title>
+<style>
+  html,body{margin:0;height:100%;background:#f7f3ea}
+  .wrap{position:relative;height:100vh;overflow:hidden}
+  iframe{position:absolute;top:-26px;left:0;width:100%;height:calc(100% + 26px);border:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <iframe id="office" data-testid="office-engine-frame" src="./qt_soffice.html" sandbox="allow-scripts allow-same-origin"></iframe>
+</div>
+</body>
+</html>

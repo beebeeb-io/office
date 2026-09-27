@@ -1,0 +1,29 @@
+[package]
+name = "office-bridge"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/beebeeb-io/office"
+description = "Glue between beebeeb-core (decrypt/encrypt) and the bbOffice JS bridge (bridge/bb-office-api.js), which talks to the LibreOffice-WASM module over its own MessagePort (task 1567 phase 3). Not wired into the web workspace build yet; no Cargo.lock committed."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+zeroize = "1"
+
+# Intentionally NOT a dependency yet: beebeeb-core. This crate's job is to move bytes
+# across the boundary; beebeeb-core (repos/core) remains the only place that touches
+# key material, per the workspace rule "all crypto/serialization in core Rust, never
+# per-client". office-bridge takes already-decrypted bytes in, hands already-received
+# bytes back out — see src/lib.rs doc comment for the exact call sequence.
+#
+# `DocumentFormat::from_extension` and `fits_memory_budget` are plain, target-independent
+# Rust (no wasm_bindgen JS calls) specifically so `cargo test` can exercise them natively
+# without a browser -- see src/lib.rs's `#[cfg(test)]` module. The `open`/`save` methods
+# that actually call `window.bbOffice.*` only compile for wasm32 (gated via
+# `#[cfg(target_arch = "wasm32")]`) since `web_sys::window()` panics off-wasm.

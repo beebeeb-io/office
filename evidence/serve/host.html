@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<!--
+  Beebeeb office — egress-test host page (task 1567 goal 4).
+
+  The LO-WASM editor loads inside a SANDBOXED iframe with neither
+  allow-top-navigation nor allow-popups. If the hyperlink patch
+  (patches/0002-hyperlink-no-navigate.patch) regressed and something in LO/Qt still
+  tried window.open() or a top-level location change, the browser would either block
+  it outright (no allow-popups/allow-top-navigation) or, in an unsandboxed page,
+  physically navigate away — this page's own beebeeb:hyperlink listener is what SHOULD
+  fire instead, and it never calls window.open/location.href itself; it only records.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>beebeeb office — egress harness</title>
+</head>
+<body style="margin:0">
+<div id="hyperlink-log" style="display:none"></div>
+<iframe
+  id="office"
+  src="./qt_soffice.html"
+  sandbox="allow-scripts allow-same-origin"
+  style="width:100vw;height:100vh;border:0"
+></iframe>
+<script>
+  // The beebeeb:hyperlink CustomEvent (patches/0002) is dispatched on the IFRAME's
+  // own `document` (it runs inside the WASM module's page, not this host page) — so
+  // for this harness we also inject a tiny listener into the iframe's document via
+  // the sandboxed iframe's own script context (allow-same-origin lets us reach in
+  // for the test only; the real host-page glue would instead listen from inside the
+  // iframe's own bundled JS, which is out of scope for this build/proof step).
+  window.__beebeebHyperlinks = [];
+  document.getElementById('office').addEventListener('load', () => {
+    try {
+      const idoc = document.getElementById('office').contentDocument;
+      idoc.addEventListener('beebeeb:hyperlink', (e) => {
+        window.__beebeebHyperlinks.push(e.detail && e.detail.url);
+        document.getElementById('hyperlink-log').textContent = JSON.stringify(window.__beebeebHyperlinks);
+      });
+    } catch (e) {
+      window.__beebeebHyperlinkListenerError = String(e);
+    }
+  });
+</script>
+</body>
+</html>

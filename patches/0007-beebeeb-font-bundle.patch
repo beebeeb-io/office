@@ -1,0 +1,205 @@
+diff --git a/download.lst b/download.lst
+index 818f5af9c..5a2c8ce4e 100644
+--- a/download.lst
++++ b/download.lst
+@@ -157,6 +157,11 @@ FONT_LIBERATION_TARBALL := liberation-fonts-ttf-2.1.5.tar.gz
+ # three static lines
+ # so that git cherry-pick
+ # will not run into conflicts
++FONT_BEEBEEB_SHA256SUM := 8b20243723bde214063df550282a2ada42c543ffb5affd77f7839ab3c901bcbb
++FONT_BEEBEEB_TARBALL := beebeeb-fonts-1.0.tar.gz
++# three static lines
++# so that git cherry-pick
++# will not run into conflicts
+ FONT_LINLIBERTINEG_SHA256SUM := 54adcb2bc8cac0927a647fbd9362f45eff48130ce6e2379dc3867643019e08c5
+ FONT_LINLIBERTINEG_TARBALL := e7a384790b13c29113e22e596ade9687-LinLibertineG-20120116.zip
+ # three static lines
+diff --git a/external/more_fonts/ExternalPackage_beebeeb.mk b/external/more_fonts/ExternalPackage_beebeeb.mk
+new file mode 100644
+index 000000000..c0bf7a949
+--- /dev/null
++++ b/external/more_fonts/ExternalPackage_beebeeb.mk
+@@ -0,0 +1,25 @@
++# -*- Mode: makefile-gmake; tab-width: 4; indent-tabs-mode: t -*-
++#
++# This file is part of the LibreOffice project.
++#
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++#
++# Beebeeb office fork (task 1567, item 4): see UnpackedTarball_beebeeb_fonts.mk's
++# own header. Six files, all OFL-1.1 (Inter, Noto Sans JP, Noto Sans Symbols,
++# Noto Sans Symbols 2, Noto Emoji) -- see external/more_fonts/README-beebeeb.md.
++#
++
++$(eval $(call gb_ExternalPackage_ExternalPackage,fonts_beebeeb,font_beebeeb))
++
++$(eval $(call gb_ExternalPackage_add_unpacked_files,fonts_beebeeb,$(LIBO_SHARE_FOLDER)/fonts/truetype,\
++	Inter-Regular.ttf \
++	Inter-Bold.ttf \
++	NotoSansJP-Regular.ttf \
++	NotoSansSymbols-Regular.ttf \
++	NotoSansSymbols2-Regular.ttf \
++	NotoEmoji-Regular.ttf \
++))
++
++# vim: set noet sw=4 ts=4:
+diff --git a/external/more_fonts/Module_more_fonts.mk b/external/more_fonts/Module_more_fonts.mk
+index f1a8d63be..3198c3862 100644
+--- a/external/more_fonts/Module_more_fonts.mk
++++ b/external/more_fonts/Module_more_fonts.mk
+@@ -11,6 +11,7 @@ $(eval $(call gb_Module_Module,more_fonts))
+ 
+ $(eval $(call gb_Module_add_targets,more_fonts,\
+ 	ExternalPackage_alef \
++	ExternalPackage_beebeeb \
+ 	ExternalPackage_amiri \
+ 	ExternalPackage_caladea \
+ 	ExternalPackage_carlito \
+@@ -36,6 +37,7 @@ $(eval $(call gb_Module_add_targets,more_fonts,\
+ 	ExternalPackage_noto_serif_lao \
+ 	ExternalPackage_reem \
+ 	UnpackedTarball_alef \
++	UnpackedTarball_beebeeb \
+ 	UnpackedTarball_amiri \
+ 	UnpackedTarball_caladea \
+ 	UnpackedTarball_carlito \
+diff --git a/external/more_fonts/README-beebeeb.md b/external/more_fonts/README-beebeeb.md
+new file mode 100644
+index 000000000..826080f2f
+--- /dev/null
++++ b/external/more_fonts/README-beebeeb.md
+@@ -0,0 +1,82 @@
++<!--
++This file is part of the LibreOffice project.
++
++This Source Code Form is subject to the terms of the Mozilla Public
++License, v. 2.0. If a copy of the MPL was not distributed with this
++file, You can obtain one at http://mozilla.org/MPL/2.0/.
++-->
++# Beebeeb font bundle (task 1567, item 4)
++
++Six files, packaged the same way as `font_liberation`/`font_carlito` right next to
++this file (`UnpackedTarball_beebeeb.mk` + `ExternalPackage_beebeeb.mk`), plus an
++explicit entry in `static/CustomTarget_emscripten_fs_image.mk`'s file list (the
++`gb_emscripten_fs_image_autoinstall`/`ooo_fonts` auto-aggregation mechanism the
++*other* fonts in this directory rely on is wired through scp2's installer module
++list, which this fork's minimized WASM distro config does not build — found by
++running the build and observing `soffice.data`'s byte size not changing after
++the ExternalPackage step succeeded; fixed by listing the 6 files directly,
++matching how `fc_local.conf` and `opens___.ttf` are already listed there).
++
++Purpose: task 1567 fix-pass item 4 — non-Latin fallback (the fixture's own
++"日本語" rendered as tofu boxes) + a bundled UI font (Inter) + general symbol/
++emoji fallback, all with zero network font loading, ever.
++
++| File | Upstream | Version/commit | License |
++|---|---|---|---|
++| `Inter-Regular.ttf`, `Inter-Bold.ttf` | github.com/rsms/inter, release v4.1 (`Inter-4.1.zip`) | `InterVariable.ttf`, instanced to static wght=400/700 (opsz=14) via `fonttools varLib.instancer --update-name-table`, then renamed to plain "Inter"/"Regular"/"Bold" (the release ships only a variable font + WOFF2, no static TTF) | OFL-1.1 |
++| `NotoSansJP-Regular.ttf` | github.com/googlefonts/noto-cjk, `Sans/SubsetOTF/JP/NotoSansJP-Regular.otf` (main branch) | Adobe's own "SubsetOTF" common-use Japanese subset (hiragana/katakana/Joyo-and-common kanji + Latin), NOT the full 65k-glyph unified CJK font | OFL-1.1 |
++| `NotoSansSymbols-Regular.ttf` | github.com/google/fonts, `ofl/notosansymbols/NotoSansSymbols[wght].ttf` | instanced to static wght=400 via `fonttools varLib.instancer --update-name-table` | OFL-1.1 |
++| `NotoSansSymbols2-Regular.ttf` | github.com/google/fonts, `ofl/notosansymbols2/NotoSansSymbols2-Regular.ttf` | already static | OFL-1.1 |
++| `NotoEmoji-Regular.ttf` | github.com/google/fonts, `ofl/notoemoji/NotoEmoji[wght].ttf` | instanced to static wght=400 via `fonttools varLib.instancer --update-name-table`; monochrome (no color glyph tables), per this task's own "Noto Color Emoji or a monochrome emoji font" choice — Color Emoji is tens of MB and would have blown the size budget alone | OFL-1.1 |
++
++All six: SIL Open Font License 1.1 — same license family as the Liberation/
++Carlito/other Noto fonts already bundled in this directory; no new license
++obligation for this fork (OFL text for each is in the respective upstream
++repo/release; not re-vendored here to avoid duplicate/stale copies — this
++table is the attribution record).
++
++## Why these, not the others
++
++- **Chosen: Japanese only, not the full Noto Sans CJK / SC / KR set.** The
++  reported bug (task 1567 fix-pass item 4, and the visible tofu in
++  `e2e/fixtures/office/sample.pptx`'s own "日本語" text) is specifically
++  Japanese. Simplified Chinese and Korean subsets from the same noto-cjk
++  release were measured (SC: 6.0 MB brotli, KR: 3.18 MB brotli) and would fit
++  the 15 MB ceiling combined with everything else, but leave almost no
++  margin. Deferred as a follow-up, not silently dropped — see the task file's
++  dated note for the exact numbers this decision was made against.
++- **Chosen: Adobe's "SubsetOTF" Japanese font (4.5 MB raw), not the full
++  per-language Noto Sans JP OTF (16+ MB raw).** SubsetOTF already restricts to
++  commonly-used characters (confirmed to cover the fixture's own "日本語" and
++  general contemporary Japanese text) — a hand-built custom subset via
++  `pyftsubset` was considered and not needed once this pre-subsetted upstream
++  option was found to already fit comfortably.
++- **Chosen: Noto Emoji (monochrome), not Noto Color Emoji.** Noto Color Emoji
++  embeds bitmap/COLR+CPAL color glyph data and is tens of MB even subsetted —
++  incompatible with the 15 MB ceiling for the WHOLE font set. Monochrome
++  emoji still resolves emoji codepoints to a real glyph instead of tofu,
++  which is the actual requirement (a monochrome glyph, not full-color
++  rendering, matches this task's own "Noto Color Emoji OR a monochrome emoji
++  font" either/or framing).
++- **Inter, both weights, static (not the variable font).** LO's WASM
++  FreeType/HarfBuzz build was not verified to select a specific `wght` axis
++  instance at render time (no test performed either way — this is a real
++  unknown, not a confirmed limitation); shipping fixed Regular/Bold instances
++  sidesteps that unknown entirely and is a well-understood, always-correct
++  choice for two named weights.
++
++## Size (measured, `brotli -q 11`, task 1567 fix-pass, 2026-09-27)
++
++| File | Raw | Brotli |
++|---|---:|---:|
++| NotoSansJP-Regular.ttf | 4,533,028 | 3,352,941 |
++| Inter-Regular.ttf | 342,068 | 127,425 |
++| Inter-Bold.ttf | 343,736 | 131,289 |
++| NotoSansSymbols-Regular.ttf | 185,364 | 78,976 |
++| NotoSansSymbols2-Regular.ttf | 1,233,128 | 435,925 |
++| NotoEmoji-Regular.ttf | 886,696 | 523,861 |
++| **Total** | **7,524,020 (7.18 MiB)** | **4,650,417 (4.43 MiB)** |
++
++Well under the task's 15 MB brotli ceiling (uses ~30% of the budget), with
++~10.5 MB of margin — most plausibly spent on Simplified Chinese and/or
++Korean coverage as a follow-up (see above).
+diff --git a/external/more_fonts/UnpackedTarball_beebeeb.mk b/external/more_fonts/UnpackedTarball_beebeeb.mk
+new file mode 100644
+index 000000000..d56d8afa8
+--- /dev/null
++++ b/external/more_fonts/UnpackedTarball_beebeeb.mk
+@@ -0,0 +1,27 @@
++# -*- Mode: makefile-gmake; tab-width: 4; indent-tabs-mode: t -*-
++#
++# This file is part of the LibreOffice project.
++#
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++#
++# Beebeeb office fork (task 1567, item 4 -- 2026-09-27): non-Latin fallback +
++# UI font bundle. Sourced by hand (not an upstream LO font module) --
++# see external/more_fonts/README-beebeeb.md for provenance, licenses and the
++# exact upstream commit/build each file came from. Follows the SAME
++# UnpackedTarball+ExternalPackage pattern as font_liberation right next to
++# this file, deliberately -- no new gbuild mechanism, just one more font set
++# in the same already-working pipeline. Strip-components=0 (the 3rd arg,
++# explicit not default): our own tarball is flat (no wrapping directory,
++# unlike most upstream tarballs gbuild's default of 1 assumes) -- found by
++# running the build and reading solenv/gbuild/UnpackedTarball.mk directly,
++# not guessed: the default strip-components=1 silently discarded every file
++# (each filename IS "component 1" with nothing after it to keep).
++#
++
++$(eval $(call gb_UnpackedTarball_UnpackedTarball,font_beebeeb))
++
++$(eval $(call gb_UnpackedTarball_set_tarball,font_beebeeb,$(FONT_BEEBEEB_TARBALL),0))
++
++# vim: set noet sw=4 ts=4:
+diff --git a/static/CustomTarget_emscripten_fs_image.mk b/static/CustomTarget_emscripten_fs_image.mk
+index 7e4057ec9..a88ad73df 100644
+--- a/static/CustomTarget_emscripten_fs_image.mk
++++ b/static/CustomTarget_emscripten_fs_image.mk
+@@ -1675,6 +1675,12 @@ gb_emscripten_fs_image_files += \
+     $(INSTROOT)/$(LIBO_SHARE_FOLDER)/config/wizard/form/styles/violet.css \
+     $(INSTROOT)/$(LIBO_SHARE_FOLDER)/config/wizard/form/styles/water.css \
+     $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/fc_local.conf \
++    $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/Inter-Regular.ttf \
++    $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/Inter-Bold.ttf \
++    $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/NotoSansJP-Regular.ttf \
++    $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/NotoSansSymbols-Regular.ttf \
++    $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/NotoSansSymbols2-Regular.ttf \
++    $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/NotoEmoji-Regular.ttf \
+     $(INSTROOT)/$(LIBO_SHARE_FOLDER)/gallery/fontwork.sdg \
+     $(INSTROOT)/$(LIBO_SHARE_FOLDER)/gallery/fontwork.sdv \
+     $(INSTROOT)/$(LIBO_SHARE_FOLDER)/gallery/fontwork.thm \

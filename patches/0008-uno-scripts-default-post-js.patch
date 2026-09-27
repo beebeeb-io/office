@@ -1,0 +1,96 @@
+Beebeeb office fork (task 1567 phase 4, folded into patches/ by task 1581):
+bake the default UNO-scripting bridge worker URL into soffice.js at link time.
+
+Adds static/emscripten/bb-uno-scripts-default.js and wires it into
+desktop/Executable_soffice_bin.mk as a --post-js (and as a link dependency).
+Without it `Module.uno_scripts` is unset inside the PROXY_TO_PTHREAD worker,
+bb-office-worker.js never loads, and window.bbOffice waits for
+Module.uno_main until it times out.
+
+Phase 4 made these two edits directly in the Legion build tree
+(its build/core checkout) and never folded them into a patch, so a clean
+`build/wasm.sh clone-gui` could not reproduce the shipped artifact (Codex
+review on beebeeb-io/office#2). This file is that tree's own `git diff` for
+the two paths, taken 2026-09-27; every other modified path in that tree is
+byte-identical to patches 0001-0004/0006/0007.
+
+diff --git a/desktop/Executable_soffice_bin.mk b/desktop/Executable_soffice_bin.mk
+index 5987a9a4d..ba6ead34b 100644
+--- a/desktop/Executable_soffice_bin.mk
++++ b/desktop/Executable_soffice_bin.mk
+@@ -79,6 +79,7 @@ endif
+ $(call gb_Executable_get_linktarget_target,soffice_bin): \
+     $(gb_CustomTarget_workdir)/static/unoembind/bindings_uno.js \
+     $(SRCDIR)/static/emscripten/uno.js \
++    $(SRCDIR)/static/emscripten/bb-uno-scripts-default.js \
+     $(EMSCRIPTEN_EXTRA_SOFFICE_PRE_JS)
+ 
+ $(eval $(call gb_Executable_add_prejs,soffice_bin,$(SRCDIR)/static/emscripten/script.js))
+@@ -86,9 +87,16 @@ $(eval $(call gb_Executable_add_prejs,soffice_bin,$(SRCDIR)/static/emscripten/sc
+ $(eval $(call gb_Executable_add_ldflags,soffice_bin, \
+     --post-js $(gb_CustomTarget_workdir)/static/unoembind/bindings_uno.js \
+     --post-js $(SRCDIR)/static/emscripten/uno.js \
++    --post-js $(SRCDIR)/static/emscripten/bb-uno-scripts-default.js \
+     $(foreach i,$(EMSCRIPTEN_EXTRA_SOFFICE_PRE_JS),--pre-js $(i)) \
+ ))
+ 
++# Beebeeb office fork (task 1567 phase 4): bake the default UNO-scripting
++# bridge worker URL into the artifact at link time -- see that file's own
++# header for why this must be a --post-js (not a --pre-js or a page-side
++# script) and why its relative-URL string literal resolves correctly in
++# every realm this bundle loads into (the page AND every pthread Worker).
++
+ ifeq ($(ENABLE_EMBINDTEST_UNO)-$(gb_SUPPRESS_TESTS),TRUE-)
+ 
+ $(call gb_Executable_get_linktarget_target,soffice_bin): \
+diff --git a/static/emscripten/bb-uno-scripts-default.js b/static/emscripten/bb-uno-scripts-default.js
+new file mode 100644
+index 000000000..afe6d160f
+--- /dev/null
++++ b/static/emscripten/bb-uno-scripts-default.js
+@@ -0,0 +1,45 @@
++/* -*- Mode: JS; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++/*
++ * Beebeeb office fork (task 1567 phase 4): default the UNO-scripting bridge
++ * worker URL so window.bbOffice works with no runtime soffice.js text patch.
++ *
++ * This file is concatenated into the generated bundle via --post-js (see
++ * desktop/Executable_soffice_bin.mk), which means -- like the rest of that
++ * bundle -- it runs a SECOND time inside the pthread Worker that
++ * -sPROXY_TO_PTHREAD=1 spawns to own main()/UNO, not just once on the page.
++ * That is exactly the property this needs: desktop/source/app/
++ * initjsunoscripting.cxx's getUnoScriptUrls() calls
++ * emscripten_sync_run_in_main_runtime_thread(), which (because
++ * PROXY_TO_PTHREAD moves "the main runtime thread" to that pthread) reads
++ * Module.uno_scripts from THAT pthread Worker's own Module object -- and the
++ * generic Emscripten pthread-spawn bootstrap only forwards a small fixed set
++ * of Module keys (onExit/onAbort/print/printErr/wasmMemory/wasmModule/
++ * workerID) to a newly spawned Worker, so a value the host page set on ITS
++ * own Module (e.g. via a <script> before the bootstrap runs) is silently
++ * invisible here. Confirmed empirically (task 1567, 2026-09-27) before this
++ * fix existed: page.addInitScript({Module:{uno_scripts:[...]}}) had no
++ * effect on the running document; the runtime text-patch in
++ * evidence/serve/patch-soffice-js.js (repos/office) reproduced this same
++ * insertion point by hand against an already-built artifact as an interim
++ * measure while this build-time fix was pending.
++ *
++ * "bridge/bb-office-worker.js" resolves relative to `location.href` in
++ * whichever realm reads it (rtl::Uri::convertRelToAbs in
++ * initjsunoscripting.cxx) -- same-origin, no absolute host baked in, so this
++ * works unmodified under any deployment path/version prefix as long as the
++ * worker script is served as a sibling of wherever soffice.js itself is
++ * fetched from. A host page can still override the whole list before its
++ * own bootstrap script runs (Module = { uno_scripts: [...] }), which the
++ * `||` below respects on the PAGE side (the override just won't reach the
++ * pthread's own Module for the reason above -- override the constant in
++ * this file at build time instead if the worker's relative path ever needs
++ * to change).
++ */
++Module.uno_scripts = Module.uno_scripts || ["bridge/bb-office-worker.js"];
