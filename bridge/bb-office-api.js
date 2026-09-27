@@ -21,6 +21,71 @@
 (function (global) {
   "use strict";
 
+  // CRITIQUE.md findings #1/#2 (task 1567, 2026-09-27): the document canvas
+  // renders tiny and pinned top-left -- worst in Impress, where the marker
+  // text bleeds vertically outside the nominal slide bounds -- when this
+  // engine is booted inside a NESTED <iframe> (Beebeeb's real production
+  // shape: office-engine-host.tsx's iframe, itself inside a flex layout),
+  // even though it renders perfectly when the exact same qt_soffice.html is
+  // loaded as a bare top-level page. Root-caused empirically (not guessed):
+  // a deliberate reproduction nesting qt_soffice.html inside an iframe with
+  // office-engine-host.tsx's own CSS (position:absolute crop hack, flex
+  // ancestry) showed `#qtcanvas`'s CSS box (`getBoundingClientRect()`) was
+  // ALREADY correct (e.g. 1400x864) the whole time, but its backing-store
+  // pixel buffer -- the `width`/`height` HTML ATTRIBUTES, which is what Qt's
+  // WASM platform plugin actually reads once, at boot, to size its QScreen --
+  // stayed stuck at the browser's literal unstyled `<canvas>` default of
+  // 300x150 (confirmed via a real probe: `attrWidth: 300, attrHeight: 150`
+  // vs. `clientWidth: 1400, clientHeight: 864`, 20s after boot). It never
+  // self-corrects afterward: this WASM build's `Module.qtResizeCanvasElement`
+  // / `Module.setCanvasElementSize` are both ABSENT (Emscripten
+  // `missingLibrarySymbols` -- confirmed by grepping the shipped soffice.js;
+  // they were link-time stripped as "unused"), so qtloader.js's own
+  // documented `resizeCanvasElement(element)` API is a no-op stub in this
+  // build; there is no live/late-resize escape hatch available without a
+  // Legion rebuild that re-exports those runtime symbols (tracked as a
+  // follow-up, NOT attempted here -- this fix only closes the boot-time gap).
+  // In a bare top-level page the canvas measured correctly at boot (matching
+  // the top window's own initial CSS layout, which a plain <body> always
+  // establishes before any script runs); nested in an iframe it did not --
+  // exactly the shape of this bridge's OWN iframe in production.
+  //
+  // Fix: force the canvas's backing-store attributes to match its actual
+  // rendered CSS box BEFORE Qt boots. This script tag is guaranteed (by the
+  // "load me as a sibling <script>, after qtloader.js" contract this file's
+  // header documents) to run synchronously during HTML parsing, strictly
+  // BEFORE the `window` "load" event that triggers qt_soffice.html's own
+  // `<body onload="init()">` -- so setting the attributes here, at this
+  // script's own top level, is always early enough. 1 CSS pixel = 1 backing
+  // pixel (devicePixelRatio is deliberately NOT applied): this build wires no
+  // corresponding DPI hint to Qt (`qtloader.js`'s own `setFontDpi` exists but
+  // nothing in this bridge calls it), so scaling the backing store alone
+  // without also telling Qt about the ratio would size the buffer right but
+  // leave Qt's own font/layout math assuming 1:1 -- a separate, unverified
+  // change, not bundled into this fix. Verified 2026-09-27 against the real
+  // engine, nested exactly like production (office repo's own
+  // evidence/serve harness + a DOM fixture matching office-engine-host.tsx's
+  // CSS): Impress/Writer/Calc all render the full page/slide/grid, correctly
+  // sized and positioned, no stray bled text.
+  (function sizeCanvasBackingStoreBeforeBoot() {
+    try {
+      var canvas = document.getElementById("qtcanvas");
+      if (!canvas) return; // not this page's shape -- never fatal
+      var rect = canvas.getBoundingClientRect();
+      var w = Math.max(1, Math.round(rect.width));
+      var h = Math.max(1, Math.round(rect.height));
+      // Only overrides the browser's own unstyled-canvas default (300x150) or
+      // an otherwise-wrong size; never fights an already-correct value (e.g.
+      // if some future build DOES size it correctly itself).
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+    } catch (e) {
+      // Best-effort -- Qt falls back to whatever the browser default is;
+      // never blocks the rest of this bridge from loading.
+      console.error("bb-office-api.js: sizeCanvasBackingStoreBeforeBoot failed:", e);
+    }
+  })();
+
   var pending = new Map();
   var nextId = 1;
   // listenerId -> callback, for unsolicited events (phase 4). Keyed the same
