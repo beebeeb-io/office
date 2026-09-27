@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
+zeroize = "1"
 
 # Intentionally NOT a dependency yet: beebeeb-core. This crate's job is to move bytes
 # across the boundary; beebeeb-core (repos/core) remains the only place that touches

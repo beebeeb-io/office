@@ -148,6 +148,7 @@ pub fn fits_memory_budget(plaintext_len: usize) -> bool {
 mod browser {
     use super::*;
     use wasm_bindgen_futures::JsFuture;
+    use zeroize::Zeroize;
 
     #[wasm_bindgen]
     extern "C" {
@@ -178,6 +179,9 @@ mod browser {
         /// function is called, not just after it returns — the caller zeroes
         /// its own buffer BEFORE calling this, not after.
         pub async fn open(plaintext: Vec<u8>, filename: String) -> Result<DocumentHandle, JsValue> {
+            // Zeroed on every return path (task 1581, Codex review on office#2):
+            // dropping a Vec frees it but leaves the plaintext in WASM linear memory.
+            let mut plaintext = zeroize::Zeroizing::new(plaintext);
             let ext = filename.rsplit('.').next().unwrap_or("");
             let format = DocumentFormat::from_extension(ext)
                 .ok_or_else(|| JsValue::from_str(&format!("unsupported extension: .{ext}")))?;
@@ -185,6 +189,8 @@ mod browser {
                 return Err(JsValue::from_str("document exceeds the memory budget; open read-only instead"));
             }
             let array = js_sys::Uint8Array::from(plaintext.as_slice());
+            // The JS copy now owns the bytes; wipe ours before the (long) await.
+            plaintext.zeroize();
             let promise = bb_office_open(array, &filename);
             JsFuture::from(promise).await?;
             Ok(DocumentHandle { format })

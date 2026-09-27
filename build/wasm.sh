@@ -21,7 +21,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CORE_DIR="$HERE/core"
 EMSDK_DIR="$HERE/emsdk"
 QT5_DIR="$HERE/qt5"
-QT5_INSTALL_DIR="$HERE/qt5-install"
+# Overridable: the Legion's existing tree installed Qt at /home/guus/bb-office/qt5-install.
+# configure-gui writes this same value into autogen.input's QT5DIR (task 1581).
+QT5_INSTALL_DIR="${QT5_INSTALL_DIR:-$HERE/qt5-install}"
 EMSDK_VERSION="3.1.46"       # headless build (Phase 1) — see PROGRESS.md attempt 1
 EMSDK_VERSION_GUI="4.0.10"   # interactive Qt build (Phase 2) — static/README.wasm.md's stated version
 QT5_BRANCH="5.15.2+wasm"     # allotropia's patched Qt5 fork branch
@@ -37,6 +39,39 @@ disk_guard() {
     echo "ABORT: only ${avail_gb}GB free on / — refusing to continue (budget: stop well before exhausting 129GB starting free space)." >&2
     exit 1
   fi
+}
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+# Patch 0007 adds FONT_BEEBEEB_TARBALL to download.lst, but that archive exists on no
+# LibreOffice mirror: it is our own (six OFL-1.1 fonts, provenance in
+# external/more_fonts/README-beebeeb.md). It is tracked at build/tarballs/ and copied
+# into the default TARFILE_LOCATION ($CORE_DIR/external/tarballs) after its sha256 is
+# checked against the value the patch put in download.lst. Without this a clean build
+# only worked on a host whose tarball cache someone had filled by hand (task 1581,
+# Codex review on office#2).
+stage_beebeeb_fonts() {
+  local want name src dest got
+  want=$(awk -F' := ' '/^FONT_BEEBEEB_SHA256SUM/{print $2}' "$CORE_DIR/download.lst")
+  name=$(awk -F' := ' '/^FONT_BEEBEEB_TARBALL/{print $2}' "$CORE_DIR/download.lst")
+  if [ -z "$want" ] || [ -z "$name" ]; then
+    echo "FAILED: $CORE_DIR/download.lst has no FONT_BEEBEEB_* entry — is patch 0007 applied?" >&2
+    exit 1
+  fi
+  src="$HERE/tarballs/$name"
+  dest="$CORE_DIR/external/tarballs/$name"
+  [ -f "$src" ] || { echo "FAILED: $src missing" >&2; exit 1; }
+  got=$(sha256_of "$src")
+  if [ "$got" != "$want" ]; then
+    echo "FAILED: $src sha256 $got does not match download.lst $want" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$dest")"
+  cp "$src" "$dest"
+  echo "staged font tarball: $dest (sha256 $got)"
 }
 
 load_guard() {
@@ -87,6 +122,7 @@ step_clone_core() {
     git apply "$p"
     echo "applied: $p"
   done
+  stage_beebeeb_fonts
 }
 
 # Extra host tools this build needs beyond Xcode CLT, all generic (not WASM-specific)
@@ -245,13 +281,17 @@ step_clone_core_gui() {
     git apply "$p"
     echo "applied: $p"
   done
+  stage_beebeeb_fonts
 }
 
 step_configure_gui() {
   disk_guard
   load_guard
   cd "$CORE_DIR"
-  cp "$HERE/autogen-gui.input" "$CORE_DIR/autogen.input"
+  # autogen-gui.input records the Legion's path; point QT5DIR at the Qt this script
+  # installed instead, so the recipe works from any checkout path (task 1581).
+  sed "s|^QT5DIR=.*|QT5DIR=$QT5_INSTALL_DIR|" "$HERE/autogen-gui.input" > "$CORE_DIR/autogen.input"
+  grep -qx "QT5DIR=$QT5_INSTALL_DIR" "$CORE_DIR/autogen.input" || { echo "FAILED: QT5DIR not set in autogen.input" >&2; exit 1; }
   # shellcheck disable=SC1091
   source "$EMSDK_DIR/emsdk_env.sh"
   rm -rf CONF-FOR-BUILD config.cache config.log autom4te.cache 2>/dev/null || true
@@ -280,6 +320,7 @@ case "${1:-}" in
   qt5-build) step_qt5_build ;;
   qt5-install) step_qt5_install ;;
   clone-gui) step_clone_core_gui ;;
+  stage-fonts) stage_beebeeb_fonts ;;
   configure-gui) step_configure_gui ;;
   build-gui) step_build_gui ;;
   *)
