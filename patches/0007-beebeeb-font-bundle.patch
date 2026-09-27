@@ -67,10 +67,17 @@ index f1a8d63be..3198c3862 100644
  	UnpackedTarball_carlito \
 diff --git a/external/more_fonts/README-beebeeb.md b/external/more_fonts/README-beebeeb.md
 new file mode 100644
-index 000000000..37e33668d
+index 000000000..826080f2f
 --- /dev/null
 +++ b/external/more_fonts/README-beebeeb.md
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,82 @@
++<!--
++This file is part of the LibreOffice project.
++
++This Source Code Form is subject to the terms of the Mozilla Public
++License, v. 2.0. If a copy of the MPL was not distributed with this
++file, You can obtain one at http://mozilla.org/MPL/2.0/.
++-->
 +# Beebeeb font bundle (task 1567, item 4)
 +
 +Six files, packaged the same way as `font_liberation`/`font_carlito` right next to

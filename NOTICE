@@ -1,0 +1,100 @@
+Beebeeb office
+Copyright (C) 2026 Initlabs B.V. (KvK 95157565), Wijchen, Netherlands.
+https://github.com/beebeeb-io/office
+
+This repository holds two kinds of code under two licenses, and a build recipe that
+fetches third-party source at pinned commits. Nothing below is legal advice; the
+per-component obligations are recorded in the workspace audit for task 1567.
+
+
+1. Beebeeb's own code: AGPL-3.0-or-later
+----------------------------------------
+Everything in this repository that is NOT a modification of LibreOffice is licensed
+under the GNU Affero General Public License, version 3 or (at your option) any later
+version. The full text is in LICENSE. This is the same license as Beebeeb's other
+public client repositories (core, cli, web, mobile, desktop). It covers:
+
+  bridge/            bb-office-api.js, bb-office-worker.js (served to browsers)
+  crates/            office-bridge (Rust glue)
+  build/             wasm.sh, mirror-qt-source.sh, make-third-party-notices.sh,
+                     autogen*.input, PINNED_COMMIT, PROGRESS.md
+  docs/, evidence/   documentation, test and measurement scripts
+  README.md, NOTICE
+
+2. Modifications of LibreOffice: MPL-2.0
+---------------------------------------
+patches/*.patch are Modifications of LibreOffice core within the meaning of the
+Mozilla Public License 2.0, section 1.10. They are licensed under MPL-2.0 (section 3.1),
+not under the AGPL. New files those patches add to the LibreOffice tree carry the MPL-2.0
+header themselves (for example static/emscripten/bb-uno-scripts-default.js from 0008 and
+external/more_fonts/*.mk and README-beebeeb.md from 0007). Full MPL-2.0 text:
+notices/MPL-2.0.txt.
+
+The patches apply to LibreOffice core at exactly this upstream commit (build/PINNED_COMMIT):
+
+  https://github.com/LibreOffice/core   (mirror of https://git.libreoffice.org/core)
+  commit f8941520720922033948ca14081dbb3dabbbe6b7
+
+Patch 0005 (*-REVERTED.patch) is a record of a backed-out attempt and is not applied.
+
+3. Third-party source the build fetches (not vendored here)
+-----------------------------------------------------------
+build/wasm.sh fetches each of these at a pinned version. None of their source is
+copied into this repository except where stated.
+
+  LibreOffice core   f8941520720922033948ca14081dbb3dabbbe6b7
+                     MPL-2.0; some files also LGPL-3.0+, GPL-3.0, Apache-2.0.
+                     LibreOffice links a set of bundled externals (FreeType, HarfBuzz,
+                     ICU, libxml2, zlib, expat, Boost and others) into soffice.wasm,
+                     each under its own license. The license file LibreOffice's own
+                     build generated for this exact commit and configuration is
+                     notices/LibreOffice-LICENSE.txt; its Apache NOTICE is
+                     notices/LibreOffice-NOTICE.txt.
+
+  Qt 5.15.2+wasm     allotropia's fork, qtbase module only, statically linked
+                     https://github.com/allotropia/qt5     3d440b7787f9b5ba15e5f8bcd7aef39b388f94fa
+                     https://github.com/allotropia/qtbase  a320678c85ec8029d5394bcd673d4c208af1de3a
+                     Used under LGPL-3.0 (notices/Qt-LGPL-3.0.txt), which incorporates
+                     GPL-3.0 (notices/Qt-GPL-3.0.txt). Both texts are Qt's own copies from
+                     qtbase at the pinned commit.
+
+  Emscripten SDK     4.0.10 for the shipped (Qt/GUI) engine; 3.1.46 for the headless spike
+                     https://github.com/emscripten-core/emsdk
+                     Emscripten: MIT or University of Illinois/NCSA (notices/Emscripten-
+                     LICENSE.txt, copied from emscripten 4.0.10). Its bundled musl is MIT;
+                     libc++/libc++abi are Apache-2.0 WITH LLVM-exception.
+
+4. Third-party files vendored here
+----------------------------------
+  build/tarballs/beebeeb-fonts-1.0.tar.gz
+                     Six fonts, all SIL Open Font License 1.1. The copyright lines and the
+                     license text are in build/tarballs/OFL.txt. Provenance per file:
+                     external/more_fonts/README-beebeeb.md inside patches/0007.
+
+  notices/*.txt      Verbatim license texts of the components above.
+
+5. Where the corresponding source is
+------------------------------------
+For the engine served to browsers (soffice.wasm, soffice.js, soffice.data and the
+files next to them) the complete corresponding source is:
+
+  a. This repository: the patches, the build recipe (build/wasm.sh) and the bridge
+     scripts. evidence/artifacts/MANIFEST.sha256 records the sha256 of every engine
+     file of each build, so a served file can be matched to the commit that built it.
+  b. LibreOffice core at the pinned commit above, from the upstream URLs above.
+  c. Qt: our own copy of the two pinned Qt commits, as release assets on this
+     repository, so the source stays available even if the upstream fork changes:
+       https://github.com/beebeeb-io/office/releases/tag/qt-source-5.15.2-wasm-3d440b7
+       qt5-3d440b7787f9b5ba15e5f8bcd7aef39b388f94fa.tar.gz
+         sha256 6e41516c14b75cf2b054b6d178a6c9b8ccba004973ed84c05ffb9819e7dae0a1
+       qtbase-a320678c85ec8029d5394bcd673d4c208af1de3a.tar.gz
+         sha256 60afec12adf59fb542ba0a0e8d8699a7eab9759348c186b6a69a34d4d17d83e8
+     build/mirror-qt-source.sh regenerates both tarballs byte for byte.
+  d. Emscripten 4.0.10 from the emsdk URL above.
+
+To relink the engine against a modified Qt (LGPL-3.0 section 4(d)(0)): build and
+install your Qt, set QT5_INSTALL_DIR to that install, and run build/wasm.sh's GUI steps
+(clone-gui, configure-gui, build-gui). The recipe reproduces the combined work.
+
+The notices that ship inside the served engine bundle are bridge/THIRD_PARTY_NOTICES.txt,
+generated from notices/ and build/tarballs/OFL.txt by build/make-third-party-notices.sh.

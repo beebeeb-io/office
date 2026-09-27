@@ -3,6 +3,8 @@ name = "office-bridge"
 version = "0.0.0"
 edition = "2021"
 publish = false
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/beebeeb-io/office"
 description = "Glue between beebeeb-core (decrypt/encrypt) and the bbOffice JS bridge (bridge/bb-office-api.js), which talks to the LibreOffice-WASM module over its own MessagePort (task 1567 phase 3). Not wired into the web workspace build yet; no Cargo.lock committed."
 
 [lib]

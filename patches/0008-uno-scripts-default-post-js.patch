@@ -8,7 +8,7 @@ bb-office-worker.js never loads, and window.bbOffice waits for
 Module.uno_main until it times out.
 
 Phase 4 made these two edits directly in the Legion build tree
-(/home/guus/bb-office/core) and never folded them into a patch, so a clean
+(its build/core checkout) and never folded them into a patch, so a clean
 `build/wasm.sh clone-gui` could not reproduce the shipped artifact (Codex
 review on beebeeb-io/office#2). This file is that tree's own `git diff` for
 the two paths, taken 2026-09-27; every other modified path in that tree is
@@ -45,10 +45,18 @@ index 5987a9a4d..ba6ead34b 100644
  $(call gb_Executable_get_linktarget_target,soffice_bin): \
 diff --git a/static/emscripten/bb-uno-scripts-default.js b/static/emscripten/bb-uno-scripts-default.js
 new file mode 100644
-index 000000000..dfaca280a
+index 000000000..afe6d160f
 --- /dev/null
 +++ b/static/emscripten/bb-uno-scripts-default.js
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,45 @@
++/* -*- Mode: JS; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
 +/*
 + * Beebeeb office fork (task 1567 phase 4): default the UNO-scripting bridge
 + * worker URL so window.bbOffice works with no runtime soffice.js text patch.

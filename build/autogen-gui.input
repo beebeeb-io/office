@@ -10,4 +10,4 @@
 --disable-curl
 --without-webdav
 --disable-libcmis
-QT5DIR=/home/guus/bb-office/qt5-install
+QT5DIR=build/qt5-install

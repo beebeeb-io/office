@@ -21,7 +21,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CORE_DIR="$HERE/core"
 EMSDK_DIR="$HERE/emsdk"
 QT5_DIR="$HERE/qt5"
-# Overridable: the Legion's existing tree installed Qt at /home/guus/bb-office/qt5-install.
+# Overridable: the Legion's existing tree installed Qt outside build/ (its own qt5-install
+# directory next to the core checkout), so it sets this explicitly.
 # configure-gui writes this same value into autogen.input's QT5DIR (task 1581).
 QT5_INSTALL_DIR="${QT5_INSTALL_DIR:-$HERE/qt5-install}"
 EMSDK_VERSION="3.1.46"       # headless build (Phase 1) — see PROGRESS.md attempt 1
@@ -303,8 +304,8 @@ step_configure_gui() {
   disk_guard
   load_guard
   cd "$CORE_DIR"
-  # autogen-gui.input records the Legion's path; point QT5DIR at the Qt this script
-  # installed instead, so the recipe works from any checkout path (task 1581).
+  # autogen-gui.input carries a placeholder QT5DIR; point it at the Qt this script
+  # installed, so the recipe works from any checkout path (task 1581).
   sed "s|^QT5DIR=.*|QT5DIR=$QT5_INSTALL_DIR|" "$HERE/autogen-gui.input" > "$CORE_DIR/autogen.input"
   grep -qx "QT5DIR=$QT5_INSTALL_DIR" "$CORE_DIR/autogen.input" || { echo "FAILED: QT5DIR not set in autogen.input" >&2; exit 1; }
   # shellcheck disable=SC1091
