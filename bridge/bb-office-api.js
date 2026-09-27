@@ -359,6 +359,26 @@
       });
     },
 
+    /**
+     * Fix pass item 1 (task 1567): sets the color LO itself paints AROUND the
+     * document (the canvas the page/grid/slide floats on) -- distinct from
+     * setTheme() above, which is the DOCCOLOR/icon-theme pair that this
+     * build cannot repaint live at all. This one applies live (see
+     * bb-office-worker.js's doSetWorkspaceColor for why) -- call it any time,
+     * including right after open(), before the caller has full confidence a
+     * mid-session call would look intentional rather than jarring; the lead's
+     * own ruling is still "applied at boot, a mid-session switch applies on
+     * the next open" for product behavior, even though the mechanism itself
+     * turned out not to require that restriction technically.
+     * @param {number} rgb 0xRRGGBB, e.g. 0xF7F3EA
+     * @returns {Promise<{applied: boolean, rgb?: number, reason?: string}>}
+     */
+    setWorkspaceColor: function (rgb) {
+      return call("setWorkspaceColor", { rgb: rgb }).then(function (msg) {
+        return msg.result;
+      });
+    },
+
     newDocument: function (docKind, templateBytes) {
       var extra = { docKind: docKind };
       var transfer = [];

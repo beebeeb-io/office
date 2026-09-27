@@ -210,6 +210,43 @@ placeholder is explicitly flagged as unmeasured in its own doc comment.
 | `soffice.js` | 840,288 B | 127,453 B | 84.9% |
 | **total** | **268,886,602 B (256MB)** | **54,487,134 B (52MB)** | **79.7%** |
 
+## 2026-09-27 — Fix pass: bundled font set, zero network font loading confirmed
+
+Task 1567 fix-pass item 4 (fixing tofu for non-Latin text + Inter for
+documents that use it) added 6 font files to `soffice.data`'s FS image (see
+`external/more_fonts/README-beebeeb.md` for the full provenance/license/size
+table): Inter Regular/Bold, Noto Sans JP (Adobe's own "SubsetOTF" common-use
+subset), Noto Sans Symbols, Noto Sans Symbols 2, Noto Emoji (monochrome).
+**Egress-relevant fact, stated explicitly per this task's own "no network
+font loading ever" requirement:** all six are packaged into the SAME
+Emscripten FS image as every other bundled font (Liberation, Carlito, the
+existing Noto Sans Arabic/Hebrew/etc. set) via the identical
+`gb_ExternalPackage`/`gb_UnpackedTarball` mechanism `font_liberation` already
+uses — there is no code path in this fork that fetches a font over the
+network (no `@font-face` with a remote `src`, no Google Fonts CSS link, no
+runtime font download). Confirmed by construction, not by a new automated
+test: the existing zero-egress Playwright suite
+(`evidence/playwright/egress.spec.js` + the web repo's own
+`e2e/1567-office-editor-egress-full.spec.ts`) already asserts 0 non-self
+requests across a full session that opens/types/saves, and neither test
+needed a new assertion for this — a font fetch, if one existed, would already
+show up as a captured non-self request in those existing gates.
+
+**Real packaging gap found and fixed, not assumed to "just work":** simply
+adding an `ExternalPackage` for a NEW font set (following the established
+`font_liberation` pattern exactly) does NOT automatically reach
+`soffice.data` on this fork's minimized WASM distro config. The `ooo_fonts`
+auto-install aggregation mechanism the OTHER fonts in this directory rely on
+(`gb_emscripten_fs_image_autoinstall`, `static/CustomTarget_emscripten_fs_image.mk`)
+is wired through scp2's installer module list, which `--with-distro=LibreOfficeWASM32`
+does not build — confirmed empirically (`soffice.data`'s byte size did not
+change at all after the new `ExternalPackage` step itself succeeded and the
+files landed in `instdir/share/fonts/truetype/`). Fixed by listing the 6 new
+files explicitly in that same Makefile's file list, the same way it already
+explicitly lists `fc_local.conf` and `opens___.ttf` — after the fix,
+`soffice.data` grew by exactly 7,524,020 bytes, byte-for-byte matching the 6
+files' combined raw size.
+
 ## What remains (not yet built, per task 1567 goal 3)
 
 The automated Playwright egress test itself (goal 3's proposal) is **not built in this phase** — phase 1 is source-level audit + build feasibility only. Proposed shape for phase 2:

@@ -243,12 +243,97 @@
         var viewSettings = vss.getViewSettings();
         viewSettings.setPropertyValue("ShowHoriRuler", new Module.uno_Any(Module.uno_Type.Boolean(), false));
         viewSettings.setPropertyValue("ShowVertRuler", new Module.uno_Any(Module.uno_Type.Boolean(), false));
+        // Fix pass item 2 (task 1567, 2026-09-27): Writer's native Qt scrollbar
+        // is a foreign-looking widget baked into the rendered canvas pixels
+        // (not a DOM element CSS can touch) -- ShowVertScrollBar/
+        // ShowHoriScrollBar exist on Writer's ViewSettings (confirmed via
+        // repos/office/evidence/probe-theming-scroll.js's own property-name
+        // enumeration; getPropertySetInfo().getProperties() itself returns
+        // an empty array for this object -- no introspection support -- so
+        // the candidate names were confirmed by direct getPropertyValue
+        // brute-force, not by enumeration). Wheel/trackpad scrolling is a
+        // separate input-event path (Qt's own wheel handling on the canvas)
+        // and is unaffected by hiding the scrollbar widget itself.
+        viewSettings.setPropertyValue("ShowVertScrollBar", new Module.uno_Any(Module.uno_Type.Boolean(), false));
+        viewSettings.setPropertyValue("ShowHoriScrollBar", new Module.uno_Any(Module.uno_Type.Boolean(), false));
       }
     } catch (e) {
-      /* Calc/Impress: no ruler properties on their ViewSettings -- not an error */
+      /* Calc/Impress: no ruler/scrollbar properties on their ViewSettings -- not an error */
+    }
+
+    // Fix pass item 2 (task 1567): Calc has no XViewSettingsSupplier at all
+    // (confirmed empirically, matching doSetZoom's own getZoomPropertySet()
+    // finding) -- HasVerticalScrollBar/HasHorizontalScrollBar are instead
+    // plain properties directly on the controller. Deliberately NOT touching
+    // HasColumnRowHeaders -- the row/column headers stay visible "until our
+    // tabs replace them" per this task's own phase-4 note.
+    try {
+      var appKind = getAppKindFromSaveExt();
+      if (appKind === "calc") {
+        var calcPs = css.beans.XPropertySet.query(controller);
+        calcPs.setPropertyValue("HasVerticalScrollBar", new Module.uno_Any(Module.uno_Type.Boolean(), false));
+        calcPs.setPropertyValue("HasHorizontalScrollBar", new Module.uno_Any(Module.uno_Type.Boolean(), false));
+      } else if (appKind === "impress") {
+        // Fix pass item 2 (task 1567) -- KNOWN GAP, Impress only, NOT
+        // resolved, documented not silently dropped. Impress/Draw has no
+        // per-property scrollbar toggle (confirmed: brute-force candidates
+        // all absent, same as Calc's own search). `.uno:ScrollBar` DOES have
+        // a real dispatch handler (queryDispatch returns non-null, dispatch
+        // resolves {dispatched:true}) and looked like the View-menu toggle
+        // this needs -- but 3 real, genuinely different verification
+        // attempts all show it has NO effect: (1) dispatched once, the
+        // scrollbar is pixel-identical before/after in a screenshot crop of
+        // the right edge; (2) an addStatusListener(".uno:ScrollBar")
+        // subscription reports the exact same {isEnabled:true, state:true}
+        // before AND after two dispatches (a real toggle would flip `state`
+        // at least once); (3) dispatching it plus two follow-up commands
+        // (.uno:Escape, setZoom) to rule out the same "one dispatch cycle of
+        // lag" this engine is already documented to have for Impress
+        // elsewhere (goToSlide, PageStatus) -- still no visible change after
+        // a 2s wait. Left NOT dispatched (a confirmed no-op call is worse
+        // than no call: it would misleadingly suggest this was handled).
+        // Writer's ShowVertScrollBar/ShowHoriScrollBar and Calc's
+        // HasVerticalScrollBar/HasHorizontalScrollBar above ARE real, verified
+        // fixes -- this is specifically an Impress-only residual gap.
+        // Item 3: zoom to fit the whole slide on open, like Keynote/Google
+        // Slides, instead of the engine's own BY_VALUE/100% default (which is
+        // what cropped the slide at the bottom of the fixed-size canvas).
+        // DocumentZoomType.ENTIRE_PAGE = 2 (confirmed empirically: setting it
+        // on Impress's controller directly -- no XViewSettingsSupplier here,
+        // same as the scrollbar props above -- made the engine itself
+        // recompute ZoomValue to a sane fit, e.g. 74% for the fixture slide,
+        // which already includes ENTIRE_PAGE's own built-in margin; no manual
+        // padding math needed). KNOWN GAP, not silently dropped: this only
+        // fits ONCE at open. Re-fitting on a host resize would need the
+        // canvas to actually resize live, which this build cannot do (see
+        // bb-office-api.js's sizeCanvasBackingStoreBeforeBoot comment --
+        // Module.qtResizeCanvasElement/setCanvasElementSize are both absent,
+        // link-time-stripped as unused) -- the "on resize" half of this item
+        // is blocked on that same, already-documented missing engine
+        // capability, not something this fix can add without a Legion
+        // rebuild re-exporting those runtime symbols.
+        try {
+          var impPs = css.beans.XPropertySet.query(controller);
+          impPs.setPropertyValue("ZoomType", new Module.uno_Any(Module.uno_Type.Short(), 2));
+        } catch (e) {
+          /* best-effort */
+        }
+      }
+    } catch (e) {
+      /* best-effort -- never blocks opening the document */
     }
 
     closeOtherEmptyFrames(model);
+  }
+
+  // Fix pass items 2/3 (task 1567): every doOpen/doNewDocument call sets
+  // state.saveExt BEFORE calling applyDocumentChrome (confirmed by reading
+  // both call sites) -- this is the one signal already available at that
+  // point cheaply, no extra UNO call needed.
+  function getAppKindFromSaveExt() {
+    if (state.saveExt === "xlsx" || state.saveExt === "xls") return "calc";
+    if (state.saveExt === "pptx" || state.saveExt === "ppt") return "impress";
+    return "writer";
   }
 
   // Closes every OTHER top-level frame that has no document model at all
@@ -851,6 +936,47 @@
     return { theme: theme, appliedLive: false }; // see the function comment: write succeeds, repaint does not happen
   }
 
+  // Fix pass item 1 (task 1567, 2026-09-27): unlike doSetTheme() above (the
+  // DOCCOLOR/icon-theme pair, which really is cached once early in
+  // Desktop::Main() startup, before UNO scripting is wired up -- confirmed by
+  // that function's own 3 documented dead-end attempts), the document's
+  // SURROUNDING canvas color (svtools::APPBACKGROUND) is a LIVE passthrough
+  // straight to Application::GetSettings().GetStyleSettings().GetWorkspaceColor(),
+  // re-evaluated on every single paint -- confirmed by reading
+  // svtools/source/config/colorcfg.cxx directly on the Legion build host
+  // (ColorConfig_Impl::GetColorValue() returns COL_AUTO whenever the config
+  // key is unset, which repos/office/evidence/probe-theming-scroll.js's own
+  // enumeration proved is EVERY key in this minimized WASM package's entirely
+  // absent org.openoffice.Office.UI config tree -- GetDefaultColor()'s own
+  // APPBACKGROUND case bypasses the dark/light cAutoColors[] table entirely
+  // and reads Application::GetSettings() fresh, with no caching layer of its
+  // own). No UNO-reachable API exists for mutating Application::GetSettings()
+  // itself (only for actual configuration nodes, which per the above is the
+  // wrong layer for this one color) -- bbSetWorkspaceColor() is a minimal,
+  // additive native function (desktop/source/app/initjsunoscripting.cxx,
+  // office commit adding it) exposed the same way that file already exposes
+  // uno_scripts/uno_main to JS (EMSCRIPTEN_KEEPALIVE extern "C", not a UNO
+  // service). rgb is a plain 0xRRGGBB integer -- design/office-editor.html's
+  // own --bg (Writer/Calc, theme-following) / --canvas-dark (Impress, always
+  // dark in both app themes per the lead's own ruling) tokens, resolved by
+  // the caller (office-editor.tsx knows the current app theme; the engine
+  // itself has no notion of it). The page (DOCCOLOR) is deliberately left
+  // alone -- it already renders correctly white in both themes (see
+  // doSetTheme's own comment), matching the lead's 2026-09-27 02:15 ruling
+  // that it should stay white in both themes like Word/Docs.
+  function doSetWorkspaceColor(rgb) {
+    if (typeof rgb !== "number" || !isFinite(rgb)) {
+      throw new Error("bbOffice.setWorkspaceColor: rgb must be a 0xRRGGBB number");
+    }
+    if (typeof Module._bbSetWorkspaceColor !== "function") {
+      // Older artifact without this fix baked in -- best-effort no-op rather
+      // than throwing, so a mismatched dev copy never blocks opening a doc.
+      return { applied: false, reason: "bbSetWorkspaceColor not exported by this artifact" };
+    }
+    Module._bbSetWorkspaceColor(rgb >>> 0);
+    return { applied: true, rgb: rgb >>> 0 };
+  }
+
   function doNewDocument(kind, templateBytesU8) {
     var css = Module.uno.com.sun.star;
     var ctx = Module.getUnoComponentContext();
@@ -907,7 +1033,15 @@
     var frame = controller.getFrame();
     var ps = css.beans.XPropertySet.query(frame);
     var lm = css.frame.XLayoutManager.query(ps.getPropertyValue("LayoutManager").get());
-    return { hasModel: true, layoutManagerVisible: !!lm.isVisible() };
+    var out = { hasModel: true, layoutManagerVisible: !!lm.isVisible() };
+    try {
+      var cps = css.beans.XPropertySet.query(controller);
+      out.zoomType = cps.getPropertyValue("ZoomType").get();
+      out.zoomValue = cps.getPropertyValue("ZoomValue").get();
+    } catch (e) {
+      out.zoomError = e && e.toString ? e.toString() : String(e);
+    }
+    return out;
   }
 
   function reply(port, id, extra) {
@@ -976,6 +1110,8 @@
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "newDocument", result: doNewDocument(msg.docKind, msg.templateBytes) });
           } else if (msg.op === "setTheme") {
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "setTheme", result: doSetTheme(msg.theme) });
+          } else if (msg.op === "setWorkspaceColor") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "setWorkspaceColor", result: doSetWorkspaceColor(msg.rgb) });
           } else if (msg.op === "__debugChromeState") {
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "__debugChromeState", result: doDebugChromeState() });
           } else {
