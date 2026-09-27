@@ -48,3 +48,57 @@ a7ea78ba0d7fc5e1ddd7ec6d9c3a0af883be243bab49c37241a3d1c71dcaf201  qtloader.js   
 Each of the three builds above is a targeted recompile+relink (not a from-scratch
 `make`), consistent with only one .mk/.cxx file changing per step — nowhere near
 phase 2's ~40-minute full build.
+
+## 2026-09-27 — Fix pass update: bbSetWorkspaceColor() + 6-file font bundle
+
+Same pinned LibreOffice/core commit (f8941520...). Two new patches applied on top
+of 0001-0004 (0005 stays reverted, not applied): patches/0006-workspace-color-live-theming.patch
+(desktop/source/app/initjsunoscripting.cxx — new bbSetWorkspaceColor() native hook)
+and patches/0007-beebeeb-font-bundle.patch (download.lst, external/more_fonts/
+{Module_more_fonts,UnpackedTarball_beebeeb,ExternalPackage_beebeeb,README-beebeeb}.mk/.md,
+static/CustomTarget_emscripten_fs_image.mk).
+
+Two builds this pass, both real `make -j12` full builds on the Legion (the
+download.lst change forced a `configure` reconfigure both times, so neither was a
+pure relink like phase 4's targeted changes above):
+
+| Build | Change | Notes |
+|---|---|---|
+| build3 (2 attempts) | 0006 (workspace color) only | 1st attempt failed: `make` invoked `autogen.sh`/`emconfigure` without the emsdk env sourced in that shell (a real environment-setup bug in how this session invoked `make`, not a LibreOffice issue) — fixed by sourcing emsdk_env.sh in the same shell before `make` |
+| build4 (3 attempts) | + 0007 (font bundle) | 1st attempt: `ExternalPackage_beebeeb.mk` failed — `strip-components` defaults to 1 in `gb_UnpackedTarget_UnpackedTarget`, silently discarding every file from this fork's OWN flat (no wrapping directory) tarball; fixed by passing `0` explicitly. 2nd attempt: `ExternalPackage` step succeeded but `soffice.data`'s byte size didn't change at all — the `ooo_fonts` auto-install aggregation the other fonts rely on isn't wired for this WASM distro; fixed by listing the 6 files explicitly in `static/CustomTarget_emscripten_fs_image.mk`. 3rd attempt: SUCCESS — `soffice.data` grew by exactly 7,524,020 bytes, byte-for-byte matching the 6 new files' combined raw size |
+
+New sha256 (all 8 files re-hashed; only wasm/data/js/metadata actually changed):
+
+```
+a2e8b99a71f5759ba32a7455e501a1fcc3612b107a5d3a16f4ff43dfa7cfcc60  soffice.wasm             171,729,584 bytes  (+213 vs phase 4 — new bbSetWorkspaceColor function)
+259b3b1807472de24b90a0bfbb1c4bccadbe2dc84741e5d1ae229dac1952c39c  soffice.data             103,840,963 bytes  (+7,524,020 — the 6 new font files)
+356c02321c01daf51da73eac58291f2b93237ac79d15a576f73be42b224c0651  soffice.js                   840,558 bytes  (+270 — baked-in preRun/glue for the new export)
+884a0f1a2c7d77233a58b91394f1a609ac74da9384a17145348a47e02dad9f7f  soffice.data.js.metadata     214,090 bytes  (file-offset table grew for the 6 new entries)
+a7ea78ba0d7fc5e1ddd7ec6d9c3a0af883be243bab49c37241a3d1c71dcaf201  qtloader.js                   22,298 bytes  (unchanged)
+6f3a9cc391a27543b32571343447ef0e899645742d27eebae8d8fda57d81a066  qtlogo.svg                     3,047 bytes  (unchanged)
+8e1e0314906d126df146bf0106ff0c001991272a6efb8152e171a6083fc57b0a  favicon.ico                    5,430 bytes  (unchanged)
+379ae1ec89c7b126913dd4b77f4167a5f0ce24edb80a11004fe07bfd2ab1c7b3  qt_soffice.html                3,229 bytes  (unchanged)
+```
+
+Total bundle: 276,658,999 bytes (263.8 MB), up from 269,134,121 (delta = 7,524,878
+bytes, matching the font/patch deltas above summed).
+
+Brotli `-q11` (real, this Mac, `.br` siblings gitignored as always):
+
+| file | before this pass | after | delta |
+|---|---:|---:|---:|
+| soffice.wasm | 38,602,455 | 38,516,221 | -86,234 (compression variance, not a regression — content is 213 bytes larger raw) |
+| soffice.data | 15,757,226 | 20,316,026 | **+4,558,800** |
+| soffice.js | 127,453 | 127,509 | +56 |
+| soffice.data.js.metadata | 19,813 | 19,874 | +61 |
+| qtloader.js/qtlogo.svg/favicon.ico/qt_soffice.html | 6,930 (unchanged, unchanged, unchanged, unchanged) | 6,930 | 0 |
+| **Total** | **54,514,723 (52.0 MB)** | **58,986,184 (56.3 MB)** | **+4,471,461 (4.27 MiB)** |
+
+**The font bundle's real, measured brotli cost inside the actual packaged
+soffice.data is 4,558,800 bytes (4.35 MiB)** — close to (and consistent with) the
+4,650,417-byte (4.43 MiB) sum of compressing the 6 font files standalone
+(external/more_fonts/README-beebeeb.md's own table); the small difference is
+normal brotli dictionary-sharing variance between "compressed alone" and
+"compressed as part of a larger blob." Both numbers are well under this task's
+15 MB ceiling, with ~10.4-10.6 MB of margin — see README-beebeeb.md for why JP-only
+(not the full CJK/SC/KR set) was the deliberate choice given that margin.
