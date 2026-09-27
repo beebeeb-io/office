@@ -29,7 +29,10 @@ LO_COMMIT="$(grep '^commit=' "$HERE/PINNED_COMMIT" | cut -d= -f2)"
 
 disk_guard() {
   local avail_gb
-  avail_gb=$(df -g / | awk 'NR==2{print $4}')
+  # POSIX `df -Pk` (1024-byte blocks), not BSD-only `df -g`: GNU df on the Legion
+  # (Arch/WSL2) rejects -g, which under `set -e` aborted every step that calls
+  # this guard (task 1581, Codex review on office#2).
+  avail_gb=$(df -Pk / | awk 'NR==2{print int($4/1048576)}')
   if [ "$avail_gb" -lt 20 ]; then
     echo "ABORT: only ${avail_gb}GB free on / — refusing to continue (budget: stop well before exhausting 129GB starting free space)." >&2
     exit 1
@@ -70,6 +73,9 @@ step_clone_core() {
   # Idempotent: skip a patch that's already applied (re-running this step twice).
   for p in "$HERE"/../patches/*.patch; do
     [ -e "$p" ] || continue
+    # *-REVERTED.patch files are prose records of attempts we backed out (0005);
+    # their diffs are intentionally not applicable (task 1581).
+    case "$p" in *-REVERTED.patch) echo "reverted record, skipping: $p"; continue ;; esac
     if ! git apply --check "$p" 2>/dev/null; then
       if git apply --reverse --check "$p" 2>/dev/null; then
         echo "already applied, skipping: $p"
@@ -141,7 +147,12 @@ step_build() {
   if ! run_make; then
     if grep -q "needed by.*saxparser.run" "$HERE/build.log" && bb_symlink_gcc3_uno_workaround; then
       echo "retrying make once after applying the known workaround..."
-      run_make
+      run_make || { echo "make failed again after the workaround — see $HERE/build.log" >&2; return 1; }
+    else
+      # A failure inside an `if !` condition does not trip `set -e`; without this
+      # return, an unrecognised make failure exited 0 (task 1581, Codex review).
+      echo "make failed (not the known saxparser.run signature) — see $HERE/build.log" >&2
+      return 1
     fi
   fi
   echo "build.log at $HERE/build.log — check its tail / exit status for the real outcome (this step runs to completion, not backgrounded, unlike configure)."
@@ -220,6 +231,9 @@ step_clone_core_gui() {
   # of 0001 (uui/curl, Phase 1). Idempotent: skips a patch already applied.
   for p in "$HERE"/../patches/*.patch; do
     [ -e "$p" ] || continue
+    # *-REVERTED.patch files are prose records of attempts we backed out (0005);
+    # their diffs are intentionally not applicable (task 1581).
+    case "$p" in *-REVERTED.patch) echo "reverted record, skipping: $p"; continue ;; esac
     if ! git apply --check "$p" 2>/dev/null; then
       if git apply --reverse --check "$p" 2>/dev/null; then
         echo "already applied, skipping: $p"
