@@ -148,6 +148,7 @@ pub fn fits_memory_budget(plaintext_len: usize) -> bool {
 mod browser {
     use super::*;
     use wasm_bindgen_futures::JsFuture;
+    use wasm_bindgen::JsCast;
     use zeroize::Zeroize;
 
     #[wasm_bindgen]
@@ -215,9 +216,12 @@ mod browser {
             self.ensure_active()?;
             let promise = bb_office_save();
             let value = JsFuture::from(promise).await?;
-            // A view over the returned buffer (no extra JS copy), copied once into
-            // Rust and then wiped, so no plaintext stays behind on the JS heap.
-            let array = js_sys::Uint8Array::new(&value);
+            // The Uint8Array bbOffice.save() returned, itself: `Uint8Array::new(&value)`
+            // would be `new Uint8Array(value)`, a COPY, and wiping the copy would leave
+            // the original plaintext on the JS heap. Copied once into Rust, then wiped.
+            let array: js_sys::Uint8Array = value
+                .dyn_into()
+                .map_err(|_| JsValue::from_str("bbOffice.save() did not return a Uint8Array"))?;
             let bytes = array.to_vec();
             array.fill(0, 0, array.length());
             // Another open() may have completed while this save was awaiting.
