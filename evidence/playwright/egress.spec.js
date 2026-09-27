@@ -144,8 +144,8 @@ test("zero egress including image insert and hyperlink click", async ({ page, co
   const officeFrame = page.frame({ url: /qt_soffice\.html/ });
   expect(officeFrame, "the office iframe did not load qt_soffice.html").toBeTruthy();
 
-  const fixtureDir = "/Users/guuslangelaar/code/bb-worktrees/mobile-1565/e2e/fixtures/preview-matrix/office";
-  const docxBytes = Array.from(fs.readFileSync(path.join(fixtureDir, "sample.docx")));
+  // Tracked fixture (task 1581; was an absolute path on one machine).
+  const docxBytes = Array.from(fs.readFileSync(path.join(__dirname, "fixtures", "sample.docx")));
   const pngBytes = Array.from(fs.readFileSync(path.join(__dirname, "..", "serve", "test-image.png")));
 
   const openResult = await officeFrame.evaluate(

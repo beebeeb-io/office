@@ -117,6 +117,14 @@
 
   var portPromise = null;
 
+  // A view that covers only part of its ArrayBuffer is copied first: transferring
+  // u8.buffer detaches the WHOLE buffer, which would destroy the caller's sibling
+  // views and any bytes outside the range it passed (task 1581, Codex review).
+  function ownBuffer(u8) {
+    if (u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength) return u8;
+    return u8.slice();
+  }
+
   function getPort() {
     if (!portPromise) {
       portPromise = waitForModule(60000).then(function (unoMain) {
@@ -143,6 +151,11 @@
           }
         };
         return port;
+      }, function (err) {
+        // Do not cache a failure: a slow first boot that outlives the 60 s wait
+        // must not poison every later call until the iframe reloads (task 1581).
+        portPromise = null;
+        throw err;
       });
     }
     return portPromise;
@@ -167,7 +180,7 @@
      * @returns {Promise<{ext: string, saveExt: string}>}
      */
     open: function (bytes, filename) {
-      var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      var u8 = ownBuffer(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
       // Transfer the underlying buffer to the worker realm -- avoids a copy for
       // large documents; the caller's own Uint8Array view becomes unusable
       // after this call, matching office-bridge's Rust-side "caller zeroes its
@@ -189,7 +202,7 @@
      * @param {string} mimeType e.g. "image/png"
      */
     insertImage: function (bytes, mimeType) {
-      var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+      var u8 = ownBuffer(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
       return call("insertImage", { bytes: u8, mimeType: mimeType }, [u8.buffer]).then(function (msg) {
         return msg.result;
       });
@@ -396,7 +409,7 @@
       var extra = { docKind: docKind };
       var transfer = [];
       if (templateBytes) {
-        var u8 = templateBytes instanceof Uint8Array ? templateBytes : new Uint8Array(templateBytes);
+        var u8 = ownBuffer(templateBytes instanceof Uint8Array ? templateBytes : new Uint8Array(templateBytes));
         extra.templateBytes = u8;
         transfer.push(u8.buffer);
       }
