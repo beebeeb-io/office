@@ -247,6 +247,64 @@ explicitly lists `fc_local.conf` and `opens___.ttf` — after the fix,
 `soffice.data` grew by exactly 7,524,020 bytes, byte-for-byte matching the 6
 files' combined raw size.
 
+## 2026-09-27 — Ship prep: the `connect-src 'self'` CSP backstop, closed
+
+This section's own item 1 below ("Serve the built WASM bundle from a
+sandboxed `<iframe>` with `Content-Security-Policy: connect-src 'self'`")
+was still unbuilt as of the fix-pass round above — the zero-egress guarantee
+rested entirely on the code never making outside calls, verified by the
+Playwright capture (item 2/3 below, built and green since phase 3:
+`e2e/1567-office-editor-egress-full.spec.ts`, repos/web), with no
+browser-enforced backstop. Closed in repos/web (not this repo — the header
+is nginx/vite config, not engine code): `nginx.conf`'s
+`location ~* ^/office/[^/]+/.+\.html$` (the exact location serving
+`bb-office-host.html`, this fork's own assembled host page) now sets
+`Content-Security-Policy: default-src 'self'; script-src 'self'
+'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self'
+'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; font-src
+'self' data:; worker-src 'self' blob:; media-src 'self' blob:; frame-src
+'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none';
+object-src 'none'` — deliberately narrower than the OUTER `/office/:fileId`
+React page's own CSP (which legitimately needs
+`api.beebeeb.io`/`status.beebeeb.io`/`errors.beebeeb.io` for the rest of the
+app's save/decrypt/telemetry calls): this document talks to that outer page
+ONLY via postMessage/MessageChannel, so it has no legitimate network need at
+all — `connect-src` is the one directive with NO exception. Mirrored in
+`vite.config.ts`'s `officeIsolationHeadersPlugin` for dev/e2e parity.
+
+`script-src` needed two real exceptions beyond the outer page's own policy,
+BOTH found by a failing gate, not written speculatively: **(1) `'unsafe-inline'`**
+— `qt_soffice.html` (this fork's own vendored file, never edited by us) boots
+via an inline `<script>` defining `init()` plus an inline `<body
+onload="init()">` handler; without it, `bb-office-api.js` still loaded (a
+separate, non-inline `<script src>`) so `window.bbOffice` existed, but
+`init()` was silently blocked so the underlying Qt/WASM module never started,
+and every `open()` call failed. **(2) plain `'unsafe-eval'`**, not just
+`'wasm-unsafe-eval'` — with only the inline-script fix, pthread workers still
+never appeared (`Module.uno_main never appeared within 60000ms`); a direct
+probe showed the engine's own `#qtstatus` boot-progress element displaying
+`EvalError: Evaluating a string as JavaScript violates ... 'unsafe-eval' is
+not an allowed source` — Emscripten's generated glue (qtloader.js/soffice.js)
+calls plain `eval()` somewhere in its own bootstrap. With both exceptions,
+the full boot sequence runs (pthread workers created, configmgr/VCL start)
+and `bbOffice.open()` reaches real UNO code — confirmed by feeding it
+deliberately invalid bytes and getting LibreOffice's own
+`loadComponentFromURL returned null ... filter MS Word 2007 XML` error, not
+a timeout. Both exceptions are judged acceptable for the SAME reason
+`'unsafe-inline'`/`'unsafe-eval'` would normally be avoided (they weaken
+script-src's protection against injected/attacker-controlled script) applies
+weakly here: this page is our own static, integrity-pinned build artifact
+that never reflects user input, so there is no attacker-controlled string
+for either directive to protect against — the property this CSP actually
+exists to guarantee, zero egress, lives entirely in `connect-src`, which
+stays strict `'self'`.
+
+**Confirmed green**, not just written: the full private-port e2e gate
+(`e2e/1567-office-editor.spec.ts`, `-calc`, `-impress`,
+`-egress-full`, `-visual-gate-screens`) re-ran clean with this exact CSP in
+the web repo's 2026-09-27 ship-prep pass — see that task file's note for the
+full run record and counts.
+
 ## What remains (not yet built, per task 1567 goal 3)
 
 The automated Playwright egress test itself (goal 3's proposal) is **not built in this phase** — phase 1 is source-level audit + build feasibility only. Proposed shape for phase 2:
