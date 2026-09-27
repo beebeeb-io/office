@@ -26,7 +26,12 @@ QT5_DIR="$HERE/qt5"
 QT5_INSTALL_DIR="${QT5_INSTALL_DIR:-$HERE/qt5-install}"
 EMSDK_VERSION="3.1.46"       # headless build (Phase 1) — see PROGRESS.md attempt 1
 EMSDK_VERSION_GUI="4.0.10"   # interactive Qt build (Phase 2) — static/README.wasm.md's stated version
-QT5_BRANCH="5.15.2+wasm"     # allotropia's patched Qt5 fork branch
+QT5_BRANCH="5.15.2+wasm"     # allotropia's patched Qt5 fork branch (for reference only)
+# Exact commits the shipped engine was built against (read from the Legion's qt5 tree,
+# 2026-09-27, task 1581): the branch above is mutable, these are not. Only qtbase is
+# initialised (--module-subset=qtbase), and it had no tracked modifications there.
+QT5_COMMIT="3d440b7787f9b5ba15e5f8bcd7aef39b388f94fa"
+QTBASE_COMMIT="a320678c85ec8029d5394bcd673d4c208af1de3a"
 LO_COMMIT="$(grep '^commit=' "$HERE/PINNED_COMMIT" | cut -d= -f2)"
 
 disk_guard() {
@@ -209,8 +214,18 @@ step_qt5_clone() {
     git clone https://github.com/allotropia/qt5.git "$QT5_DIR"
   fi
   cd "$QT5_DIR"
-  git checkout "$QT5_BRANCH"
+  git fetch origin "$QT5_BRANCH"
+  git checkout --detach "$QT5_COMMIT"
   ./init-repository --module-subset=qtbase
+  local got
+  got=$(git -C qtbase rev-parse HEAD)
+  if [ "$got" != "$QTBASE_COMMIT" ]; then
+    git -C qtbase fetch origin
+    git -C qtbase checkout --detach "$QTBASE_COMMIT"
+    got=$(git -C qtbase rev-parse HEAD)
+  fi
+  [ "$got" = "$QTBASE_COMMIT" ] || { echo "FAILED: qtbase at $got, expected $QTBASE_COMMIT" >&2; exit 1; }
+  echo "qt5 pinned: qt5@$QT5_COMMIT qtbase@$QTBASE_COMMIT"
 }
 
 # NOTE (found running this on the Legion, 2026-09-26): upstream's doc shows

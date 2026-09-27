@@ -165,7 +165,14 @@ mod browser {
     #[wasm_bindgen]
     pub struct DocumentHandle {
         format: DocumentFormat,
+        generation: u64,
     }
+
+    /// `bbOffice` holds one document at a time. Each successful `open` bumps this,
+    /// and a handle whose generation is no longer current refuses to `save`, so an
+    /// old handle can never return (and get uploaded over its file) the bytes of
+    /// the document opened after it (task 1581, Codex review on office#2).
+    static ACTIVE_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
     #[wasm_bindgen]
     impl DocumentHandle {
@@ -193,7 +200,8 @@ mod browser {
             plaintext.zeroize();
             let promise = bb_office_open(array, &filename);
             JsFuture::from(promise).await?;
-            Ok(DocumentHandle { format })
+            let generation = ACTIVE_GENERATION.fetch_add(1, core::sync::atomic::Ordering::SeqCst) + 1;
+            Ok(DocumentHandle { format, generation })
         }
 
         /// Asks `window.bbOffice.save()` for the current document's bytes
@@ -204,10 +212,29 @@ mod browser {
         /// why at the native layer (curl is compiled out entirely) and this
         /// crate has no networking dependency to begin with.
         pub async fn save(&self) -> Result<Vec<u8>, JsValue> {
+            self.ensure_active()?;
             let promise = bb_office_save();
             let value = JsFuture::from(promise).await?;
+            // A view over the returned buffer (no extra JS copy), copied once into
+            // Rust and then wiped, so no plaintext stays behind on the JS heap.
             let array = js_sys::Uint8Array::new(&value);
-            Ok(array.to_vec())
+            let bytes = array.to_vec();
+            array.fill(0, 0, array.length());
+            // Another open() may have completed while this save was awaiting.
+            if let Err(e) = self.ensure_active() {
+                let mut bytes = bytes;
+                bytes.zeroize();
+                return Err(e);
+            }
+            Ok(bytes)
+        }
+
+        fn ensure_active(&self) -> Result<(), JsValue> {
+            if ACTIVE_GENERATION.load(core::sync::atomic::Ordering::SeqCst) == self.generation {
+                Ok(())
+            } else {
+                Err(JsValue::from_str("stale document handle: another document has been opened since"))
+            }
         }
 
         /// The format this handle was opened with (`.doc` stays `Doc`, not
