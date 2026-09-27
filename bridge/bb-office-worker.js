@@ -96,6 +96,18 @@
  *     throwing, matching getOutline's own convention.
  *   { op: "goToHeading", id, index } -> { ok }
  *   { op: "setZoom", id, percent } -> { ok }
+ *   { op: "getSlideSize", id } -> { ok, kind: "getSlideSize", result: {width, height}|null }
+ *     Impress/Draw only (task 1567 fix-pass round 2, 2026-09-27, Impress
+ *     zoom-to-fit): width/height of DrawPages[0] in 1/100 mm (offapi's
+ *     standard page-size unit) -- null for a non-Draw/Impress active
+ *     document. The WEB SHELL (office-editor.tsx) uses this plus its own
+ *     measured container size to compute a real fit-to-page zoom percent
+ *     and calls setZoom() with it, on open AND on every container resize --
+ *     see that file's own comment for why this lives on the web side and
+ *     not as an engine-side auto-fit (ZoomType=ENTIRE_PAGE, tried first,
+ *     was a confirmed no-op in production: two full-session screenshots
+ *     taken before/after that dispatch was added are pixel-identical in the
+ *     canvas region, proving it never took effect).
  *   { op: "newDocument", id, kind, templateBytes? }
  *     kind: "writer"|"calc"|"impress"; templateBytes optional (Uint8Array) ->
  *     opened with AsTemplate:true so saving never overwrites the template.
@@ -295,29 +307,36 @@
         // Writer's ShowVertScrollBar/ShowHoriScrollBar and Calc's
         // HasVerticalScrollBar/HasHorizontalScrollBar above ARE real, verified
         // fixes -- this is specifically an Impress-only residual gap.
-        // Item 3: zoom to fit the whole slide on open, like Keynote/Google
-        // Slides, instead of the engine's own BY_VALUE/100% default (which is
-        // what cropped the slide at the bottom of the fixed-size canvas).
-        // DocumentZoomType.ENTIRE_PAGE = 2 (confirmed empirically: setting it
-        // on Impress's controller directly -- no XViewSettingsSupplier here,
-        // same as the scrollbar props above -- made the engine itself
-        // recompute ZoomValue to a sane fit, e.g. 74% for the fixture slide,
-        // which already includes ENTIRE_PAGE's own built-in margin; no manual
-        // padding math needed). KNOWN GAP, not silently dropped: this only
-        // fits ONCE at open. Re-fitting on a host resize would need the
-        // canvas to actually resize live, which this build cannot do (see
-        // bb-office-api.js's sizeCanvasBackingStoreBeforeBoot comment --
-        // Module.qtResizeCanvasElement/setCanvasElementSize are both absent,
-        // link-time-stripped as unused) -- the "on resize" half of this item
-        // is blocked on that same, already-documented missing engine
-        // capability, not something this fix can add without a Legion
-        // rebuild re-exporting those runtime symbols.
-        try {
-          var impPs = css.beans.XPropertySet.query(controller);
-          impPs.setPropertyValue("ZoomType", new Module.uno_Any(Module.uno_Type.Short(), 2));
-        } catch (e) {
-          /* best-effort */
-        }
+        // Item 3 (Impress zoom to fit) -- ROUND 2 CORRECTION, 2026-09-27.
+        // The round-1 fix here dispatched DocumentZoomType.ENTIRE_PAGE = 2
+        // on open, on the theory the engine would recompute ZoomValue to a
+        // sane fit itself. Re-verified by the lead against a real
+        // screenshot: it was a CONFIRMED NO-OP in production, not a partial
+        // fix -- a pixel diff between a screenshot taken before this
+        // dispatch existed and one taken after showed the canvas region
+        // pixel-identical (slide rendered at the literal engine default,
+        // BY_VALUE/100%, still overflowing the visible canvas and leaving
+        // the native vertical scrollbar visible). Root cause never fully
+        // isolated (candidates: ENTIRE_PAGE's own fit computation running
+        // against a canvas size read before this iframe's final on-screen
+        // layout settles; ZoomType silently not sticking without an
+        // explicit ZoomValue write in the same call) -- rather than keep
+        // guessing at engine internals, this dispatch is REMOVED and the
+        // fit is now computed and pinned by the WEB SHELL instead, which
+        // has ground truth for both the real container size (ResizeObserver)
+        // and the real slide size (this file's new getSlideSize() op) and
+        // calls setZoom() (now ALSO forcing ZoomType=BY_VALUE, see that
+        // function's own updated comment) once docReady flips true (so the
+        // filmstrip panel has already claimed its own width -- computing
+        // fit BEFORE that would fit against a too-wide container and
+        // overflow the moment the filmstrip mounts) AND again on every
+        // container resize -- see office-editor.tsx's own
+        // use-impress-fit-zoom.ts hook. Left at the engine's own
+        // BY_VALUE/100% default here; office-engine-host.tsx's own
+        // scrollbar-crop overlay (added the same round, Impress only) hides
+        // the native scrollbar unconditionally regardless of this timing,
+        // so no unfit frame is ever visible even for the one render tick
+        // before the web shell's own fit call resolves.
       }
     } catch (e) {
       /* best-effort -- never blocks opening the document */
@@ -884,10 +903,59 @@
     if (!propSet) {
       throw new Error("bbOffice.setZoom: active document has no zoom property set");
     }
-    // ZoomValue is a `short` (offapi com.sun.star.view.ViewSettings); no
-    // ZoomType change (stays whatever the user last picked, e.g. "page width").
+    // Fix-pass round 2 (task 1567, 2026-09-27, Impress zoom-to-fit):
+    // ALSO force ZoomType=BY_VALUE (offapi DocumentZoomType, =3) before
+    // writing ZoomValue. Previously this only touched ZoomValue and left
+    // ZoomType at whatever it was ("stays whatever the user last picked" --
+    // the old comment here, since removed). That was silently wrong for
+    // Impress specifically: applyDocumentChrome used to leave ZoomType at
+    // ENTIRE_PAGE (=2) on open, and Beebeeb's own UI has no "fit" mode of
+    // its own -- every call into this function is meant to pin an EXACT
+    // percent, so ZoomType must be BY_VALUE for ZoomValue to be respected
+    // rather than silently recomputed by the engine on the next internal
+    // relayout. Writer/Calc were unaffected either way (their ZoomType was
+    // already BY_VALUE by default), so this is a no-op behavior change for
+    // them and the real fix for Impress's own zoom-to-fit call (see
+    // office-editor.tsx, which now computes the fit percent itself from the
+    // real container + getSlideSize() and calls this).
+    propSet.setPropertyValue("ZoomType", new Module.uno_Any(Module.uno_Type.Short(), 3));
     propSet.setPropertyValue("ZoomValue", new Module.uno_Any(Module.uno_Type.Short(), percent));
     return { zoom: percent };
+  }
+
+  // Fix-pass round 2 (task 1567, 2026-09-27, Impress zoom-to-fit): the page
+  // size backing the web shell's own fit-zoom computation (see doSetZoom's
+  // comment above and office-editor.tsx). 1/100 mm, offapi's standard page
+  // size unit (com.sun.star.drawing.GenericDrawingDocument's Width/Height
+  // property on each XDrawPage) -- the SAME unit LO's own UI status bar
+  // ruler uses, chosen so no engine-side unit conversion is needed here;
+  // the web shell converts to CSS px itself (2540 hundredths-of-a-mm per
+  // inch / 96 CSS px per inch).
+  function doGetSlideSize() {
+    var model = getActiveModel();
+    if (!model) return null;
+    var css = Module.uno.com.sun.star;
+    var supplier = css.drawing.XDrawPagesSupplier.query(model);
+    if (!supplier) return null; // not a Draw/Impress document
+    var pages = supplier.getDrawPages();
+    if (!pages || pages.getCount() === 0) return null;
+    // getByIndex() returns a uno_Any (a boxed "any"), not the interface
+    // itself -- .get() unwraps it to the real object, same convention this
+    // file already uses at closeOtherEmptyFrames's own
+    // `frames.getByIndex(i).get()`. MISSING THIS FIRST TIME PAST A REAL
+    // e2e SCREENSHOT RUN, not just guessed: without it, XPropertySet.query()
+    // throws "BindingError: Expected null or instance of
+    // uno_Type_com$sun$star$uno$XInterface, got an instance of uno_Any" —
+    // caught by this hook's own caller (use-impress-fit-zoom.ts) and logged,
+    // never crashing the app, which is exactly why the FIRST verification
+    // pass showed no visible change AND no visible error until the
+    // browser console was actually read.
+    var page = pages.getByIndex(0).get();
+    var ps = css.beans.XPropertySet.query(page);
+    if (!ps) return null;
+    var width = ps.getPropertyValue("Width").get();
+    var height = ps.getPropertyValue("Height").get();
+    return { width: width, height: height };
   }
 
   var FACTORY_URL = { writer: "private:factory/swriter", calc: "private:factory/scalc", impress: "private:factory/simpress" };
@@ -1106,6 +1174,8 @@
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "goToHeading", result: doGoToHeading(msg.index) });
           } else if (msg.op === "setZoom") {
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "setZoom", result: doSetZoom(msg.percent) });
+          } else if (msg.op === "getSlideSize") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "getSlideSize", result: doGetSlideSize() });
           } else if (msg.op === "newDocument") {
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "newDocument", result: doNewDocument(msg.docKind, msg.templateBytes) });
           } else if (msg.op === "setTheme") {

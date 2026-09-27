@@ -340,6 +340,19 @@
     },
 
     /**
+     * Fix pass round 2 (task 1567, 2026-09-27, Impress zoom-to-fit): the
+     * active document's page size, for the web shell's own fit-to-container
+     * zoom computation (see office-editor.tsx / use-impress-fit-zoom.ts).
+     * @returns {Promise<{width: number, height: number}|null>} 1/100 mm;
+     *   null for a non-Draw/Impress active document.
+     */
+    getSlideSize: function () {
+      return call("getSlideSize", {}).then(function (msg) {
+        return msg.result;
+      });
+    },
+
+    /**
      * Opens a brand-new document, closing whatever is currently open.
      * @param {"writer"|"calc"|"impress"} docKind
      * @param {Uint8Array} [templateBytes] optional template to base it on
