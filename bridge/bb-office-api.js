@@ -313,6 +313,18 @@
       });
     },
 
+    /**
+     * CRITIQUE.md finding #8 (task 1567): live word count + cursor-locale
+     * language, for the status bar. Writer only -- all-null fields for a
+     * non-Writer active document (no exception), matching getOutline().
+     * @returns {Promise<{words: number|null, characters: number|null, language: string|null}>}
+     */
+    getDocStats: function () {
+      return call("getDocStats", {}).then(function (msg) {
+        return msg.result;
+      });
+    },
+
     /** Moves the view cursor to the i-th heading returned by getOutline(). */
     goToHeading: function (index) {
       return call("goToHeading", { index: index }).then(function (msg) {

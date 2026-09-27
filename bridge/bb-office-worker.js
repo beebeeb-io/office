@@ -90,6 +90,10 @@
  *   { op: "getOutline", id } -> { ok, kind: "getOutline", result: [{level, text}] }
  *     Writer only; a non-Writer active document returns an empty outline
  *     rather than throwing (no heading concept in Calc/Impress).
+ *   { op: "getDocStats", id } -> { ok, kind: "getDocStats", result: {words, characters, language} }
+ *     Writer only (task 1567 goal 6, CRITIQUE.md finding #8); a non-Writer
+ *     active document (or none) returns all-null fields rather than
+ *     throwing, matching getOutline's own convention.
  *   { op: "goToHeading", id, index } -> { ok }
  *   { op: "setZoom", id, percent } -> { ok }
  *   { op: "newDocument", id, kind, templateBytes? }
@@ -703,6 +707,51 @@
     });
   }
 
+  // CRITIQUE.md finding #8 (task 1567, 2026-09-27): the status bar's word-
+  // count/language fields were permanently null for Writer+Calc "by
+  // construction" (office-editor.tsx never had a code path to fill them) --
+  // the critique itself asked for "a real probe rather than assuming it's
+  // unreachable". Probed against the real engine: `.uno:WordCountDialog`'s
+  // own addStatusListener never delivers a usable State (it's dialog-only,
+  // no live-count broadcast), but `XTextDocument.getText().getString()` is a
+  // plain, always-available UNO method that needs no dialog -- a real,
+  // accurate live count for ordinary Latin-script text (verified against a
+  // known 9-word sentence). This is a simple whitespace-split count, NOT a
+  // reimplementation of LO's own internal SwDocStat (which has its own
+  // CJK/hyphenation rules) -- an honest V1, not a guess dressed up as exact.
+  // Language reads the VIEW CURSOR's CharLocale (also a plain, stable
+  // property, confirmed empirically) -- "language at the cursor", the same
+  // semantic Word's own status bar uses, not a single document-wide value.
+  // Calc/Impress have no XTextDocument, so this returns nulls for them
+  // rather than throwing -- the status bar already renders that as an
+  // honestly-omitted field (office-status-bar.tsx), matching the ONE
+  // exception noted in the critique's own "what's good" section.
+  function doGetDocStats() {
+    var css = Module.uno.com.sun.star;
+    var model = getActiveModel();
+    if (!model) return { words: null, characters: null, language: null };
+    var xTextDoc = css.text.XTextDocument.query(model);
+    if (!xTextDoc) return { words: null, characters: null, language: null };
+    var full = xTextDoc.getText().getString();
+    var trimmed = full.replace(/^\s+|\s+$/g, "");
+    var words = trimmed.length ? trimmed.split(/\s+/).length : 0;
+    var language = null;
+    try {
+      var controller = getController(model);
+      var vcs = css.text.XTextViewCursorSupplier.query(controller);
+      var viewCursor = vcs.getViewCursor();
+      var ps = css.beans.XPropertySet.query(viewCursor);
+      var locale = ps.getPropertyValue("CharLocale").get();
+      if (locale && locale.Language) {
+        language = locale.Country ? locale.Language + "-" + locale.Country : locale.Language;
+      }
+    } catch (e) {
+      /* best-effort -- language stays null, matching the status bar's own
+         "honestly omit rather than fake" convention */
+    }
+    return { words: words, characters: full.length, language: language };
+  }
+
   function doGoToHeading(index) {
     var model = getActiveModel();
     if (!model) {
@@ -917,6 +966,8 @@
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "removeSelectionListener", result: doRemoveListener(msg.listenerId) });
           } else if (msg.op === "getOutline") {
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "getOutline", result: doGetOutline() });
+          } else if (msg.op === "getDocStats") {
+            reply(Module.uno_mainPort, msg.id, { ok: true, kind: "getDocStats", result: doGetDocStats() });
           } else if (msg.op === "goToHeading") {
             reply(Module.uno_mainPort, msg.id, { ok: true, kind: "goToHeading", result: doGoToHeading(msg.index) });
           } else if (msg.op === "setZoom") {
