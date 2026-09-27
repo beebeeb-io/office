@@ -61,7 +61,10 @@ case "${1:-}" in
     fi
     ;;
   "")
+    # mktemp creates 0600; the served copy must be world-readable (nginx in the
+    # web image runs as a non-root user), so write 0644 explicitly.
     cp "$TMP" "$OUT"
+    chmod 0644 "$OUT"
     echo "wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"
     ;;
   *) echo "usage: $0 [--check]" >&2; exit 1 ;;
