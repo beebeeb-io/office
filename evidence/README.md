@@ -54,3 +54,14 @@ npx playwright test playwright/editing.spec.js --reporter=list
 npx playwright test playwright/egress.spec.js --reporter=list                 # GREEN
 BB_SERVE_NO_CSP=1 BB_EGRESS_INJECT_FETCH=1 npx playwright test playwright/egress.spec.js --reporter=list  # RED-PROOF (also restart the server with BB_SERVE_NO_CSP=1)
 ```
+
+## Relay proof (desktop host on another origin)
+
+`bun relay/relay-proof.js [port]` proves `bridge/bb-office-relay.js` and `bridge/bb-office-host.html`
+with a stub engine (`relay/stub/`, harness only): two origins with COOP/COEP (the engine also with
+CORP `cross-origin`), `crossOriginIsolated` true in the engine frame, a `.docx` round trip
+(open, then save returns the same bytes, transferred as ArrayBuffers), a subscription event, an
+unknown method refused, and a parent on an unlisted origin answered with nothing (counted as
+refused). It exits 0 only when every check passes. `BB_CHROMIUM=<path>` uses an installed Chromium.
+The frame must carry `allow="cross-origin-isolated"`: without it the engine frame is not isolated
+(seen red on that mutant). The real-engine run needs a built engine beside the host page.

@@ -1,0 +1,39 @@
+<!doctype html>
+<!--
+  Beebeeb office: the engine page a Beebeeb app frames (the desktop app serves it,
+  with the engine files beside it, from its own `bboffice` scheme).
+
+  It boots the LibreOffice WASM engine (qtloader.js -> soffice.js/.wasm/.data),
+  exposes `window.bbOffice` (bb-office-api.js) and relays the parent window's calls
+  to it by postMessage (bb-office-relay.js). Only a parent on one of the origins in
+  `data-parent-origins` can drive it: the Tauri app's origins on macOS/Linux
+  (tauri://localhost) and Windows (http://tauri.localhost, https://tauri.localhost).
+
+  Every script is a same-directory file (no inline script, no network): the page
+  works under `script-src 'self'`. Serve it with COOP same-origin, COEP require-corp
+  and CORP cross-origin so the engine's threads get cross-origin isolation inside
+  an isolated parent.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, height=device-height, user-scalable=0">
+    <title>Beebeeb office engine</title>
+    <style>
+      html, body { padding: 0; margin: 0; overflow: hidden; height: 100vh }
+      /* The canvas must have no border or padding, or mouse coordinates are off. */
+      canvas { border: 0 none; background-color: white; height: 100%; width: 100%;
+               outline: 0 solid transparent; caret-color: transparent; cursor: default }
+      #qtspinner { margin: 1.5em 0 0; text-align: center; font: 13px sans-serif; color: #555 }
+    </style>
+  </head>
+  <body>
+    <div id="qtspinner"><div id="qtstatus"></div></div>
+    <canvas id="qtcanvas" contenteditable="true"></canvas>
+    <script src="bb-office-boot.js"></script>
+    <script src="qtloader.js"></script>
+    <script src="bb-office-api.js"></script>
+    <script src="bb-office-relay.js"
+            data-parent-origins="tauri://localhost http://tauri.localhost https://tauri.localhost"></script>
+  </body>
+</html>
